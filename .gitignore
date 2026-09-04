@@ -1,0 +1,15 @@
+# build/VCS noise (在同步前已剔除, double-guard)
+obj/
+Debug/
+Release/
+*.o
+*.elf
+*.map
+*.srec
+*.bin
+*.hex
+*.zip
+*.log
+.mrs/
+__pycache__/
+*.pyc
