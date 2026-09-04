@@ -1,15 +1,17 @@
-# build/VCS noise (在同步前已剔除, double-guard)
+# 编译/产物(前期已在同步剪除;防回加未跟踪) —— 只忽略 obj 编译树,不影响命名像源码的目录
 obj/
-Debug/
-Release/
+/makefile
+/objects.mk
+/sources.mk
 *.o
 *.elf
+*.hex
 *.map
 *.srec
 *.bin
-*.hex
-*.zip
 *.log
+*.zip
 .mrs/
 __pycache__/
 *.pyc
+# 注意: 不再用裸 Debug//Release/ —— V3F/V5F/Common 存在命名含 Debug/Release 的真实源码目录(如 Common/Debug/debug.c/h)
