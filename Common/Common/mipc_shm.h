@@ -16,7 +16,7 @@
  *   ★ 0 值本身可能合法（速度 0、经度 0、HDOP 0、海拔 0），判空必须查位，不要用值判空。
  *
  * 数值表示：能用 float 精确表达的物理量直接传 float（两核均按 -mabi=ilp32f 编译，硬浮点）；
- *   只有 float 精度不够时才保留定点，并逐字段注明定标（本文件的 ×1e7 度 / cm / cm/s / ×100
+ *   只有 float 精度不够时才保留定点，并逐字段注明定标（本文件的 ×1e7 度 / cm / ×100
  *   都是十进制定标整数，不是 Qm.n 二进制定点）。
  * ===================================================================== */
 
@@ -62,11 +62,12 @@ typedef struct {
     chan_hdr_t hdr;                     /* 12 B */
     volatile uint8_t  flags;
     volatile uint8_t  status;           /* NMEA 原字符：'A'=有效 / 'V'=无效 */
-    volatile uint16_t speed_cmps;       /* 对地速度 cm/s（uint16 上限 65535 cm/s ≈ 1273 节） */
+    volatile uint16_t _rsv0;            /* 对齐填充 */
+    volatile float    speed_mps;        /* 对地速度 m/s（解析自 RMC 的节值 ×0.5144444） */
     volatile int32_t  lat_e7;           /* 纬度 ×1e7 度（1 LSB = 10^-7°，南纬为负）；float 精度不够，必须定点 */
     volatile int32_t  lon_e7;           /* 经度 ×1e7 度（西经为负） */
     volatile uint32_t date_ddmmyy;      /* UTC 日期 ddmmyy（十进制字面量） */
-} gps_rmc_chan_t;                       /* 28 B，无空洞 */
+} gps_rmc_chan_t;                       /* 32 B，无空洞 */
 
 /* ---- GPS GGA：定位质量 / 卫星数 / HDOP / 海拔 ---- */
 typedef struct {

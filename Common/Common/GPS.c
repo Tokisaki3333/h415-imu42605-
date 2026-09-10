@@ -84,7 +84,7 @@ static void parser_reset(GpsParser *p, uint8_t cs_init, uint32_t first_abs)
 /* ================= GPS 共享区发布（V3F → V5F） =================
  * 每条校验通过的 RMC/GGA/GSA 语句发布一帧；某字段本帧缺失时对应 flags 位为 0、
  * 数值同时清零（显式空标志，判空一律查 flags 位，勿用值判空）。
- * GPS 各字段保持定点整数（lat/lon ×1e7 度、speed cm/s、hdop/pdop/vdop ×100、alt cm）：
+ * 速度用 float 传 m/s；其余保持定点整数（lat/lon ×1e7 度、hdop/pdop/vdop ×100、alt cm）：
  * 字串解析天然是整数，且经纬度用 float 精度不够；跨核浮点的取舍见 mipc_shm.h。 */
 
 /* 提取字段文本到栈缓冲（字段短；按绝对下标跨回绕安全） */
@@ -128,10 +128,10 @@ static int32_t latlon_to_e7(const char *s)
                    + (m * p10 + frac) * 10000000LL / (60LL * p10));
 }
 
-/* "x.y" 节 → cm/s（1 节 = 51.4444 cm/s） */
-static uint32_t knots_to_cmps(const char *s)
+/* "x.yyy" 节 → m/s（1 节 = 0.5144444 m/s）：取 3 位小数，float 误差 ~1e-7，远小于接收机 0.05 m/s(1σ) */
+static float knots_to_mps(const char *s)
 {
-    return (uint32_t)((int64_t)parse_fixed(s, 2) * 514444LL / 1000000LL);
+    return (float)parse_fixed(s, 3) * 1e-3f * 0.51444444f;
 }
 
 /* RMC 通道发布：先清本通道字段（本帧缺失显式空），再填，最后 ts + cnt++ */
@@ -141,7 +141,7 @@ static void gps_publish_rmc(void)
     /* 本帧缺失的字段先显式清空并清 flags 位（0 值本身合法，判空一律查 flags） */
     g_shm->gps_rmc.flags = 0;
     g_shm->gps_rmc.status = 0;      g_shm->gps_rmc.lat_e7 = 0; g_shm->gps_rmc.lon_e7 = 0;
-    g_shm->gps_rmc.speed_cmps = 0;  g_shm->gps_rmc.date_ddmmyy = 0;
+    g_shm->gps_rmc.speed_mps = 0;   g_shm->gps_rmc.date_ddmmyy = 0;
 
     if (rmc_p.flen[2] > 0) {
         g_shm->gps_rmc.flags |= SHM_RMC_STATUS;
@@ -160,9 +160,8 @@ static void gps_publish_rmc(void)
     }
     if (rmc_p.flen[7] > 0) {
         field_copy(t, sizeof t, rmc_p.fabs[7], rmc_p.flen[7]);
-        uint32_t cmps = knots_to_cmps(t);
         g_shm->gps_rmc.flags |= SHM_RMC_SPEED;
-        g_shm->gps_rmc.speed_cmps = (cmps > 65535u) ? 65535u : (uint16_t)cmps;   /* uint16 饱和 */
+        g_shm->gps_rmc.speed_mps = knots_to_mps(t);
     }
     if (rmc_p.flen[9] > 0) {
         field_copy(t, sizeof t, rmc_p.fabs[9], rmc_p.flen[9]);

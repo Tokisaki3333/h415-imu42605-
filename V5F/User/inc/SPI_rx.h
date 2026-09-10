@@ -51,7 +51,7 @@ typedef struct {
     uint8_t     status;          /* NMEA 原字符：'A'=有效 / 'V'=无效 */
     int32_t     lat_e7;          /* 纬度 ×1e7 度（1 LSB = 10^-7°，北正南负） */
     int32_t     lon_e7;          /* 经度 ×1e7 度（东正西负） */
-    float       speed_mps;       /* 对地速度 m/s（共享区为 cm/s 定标整数） */
+    float       speed_mps;       /* 对地速度 m/s（共享区同为 float m/s） */
     uint32_t    date_ddmmyy;     /* UTC 日期 ddmmyy（十进制字面量） */
 } v5f_gps_rmc_t;
 
