@@ -88,33 +88,6 @@ static void hold_poll(void)
     }
 }
 
-/* ==================== JustFloat 帧（DMA ISR 尾组装，注入 USBHS-HID） ====================
- * 帧(10 x f32 = 40B 小端)：ch0-3 四元数 q0..q3 / ch4-6 bias / ch7 静止计数
- *                          / ch8 本次 ISR 最劣耗时 us / ch9 尾部 0x7F800000(+Inf)
- * attitude.c / ins.c 已弃用：ch0-3 恒为单位四元数，ch4-6 与 ch7 暂以 0 占位（通道语义待定）。 */
-static void hud_frame_push(void)
-{
-    union { float f; uint32_t u; } out;
-    float   q[10];
-    uint8_t b[40];
-    int     i;
-
-    out.u = 0x7F800000u;                     /* 帧尾 +Inf */
-    q[0]=g_v5f_hold.imu.quat[0]; q[1]=g_v5f_hold.imu.quat[1];
-    q[2]=g_v5f_hold.imu.quat[2]; q[3]=g_v5f_hold.imu.quat[3];
-    q[4]=0.0f;          q[5]=0.0f;          q[6]=0.0f;   /* 零偏通道：解算模块已弃用 */
-    q[7]=0.0f;                                          /* 静止计数：解算模块已弃用 */
-    q[8]=(float)s_dma1_irq_max_us;
-    q[9]=out.f;
-
-    for(i=0;i<10;i++){ out.f=q[i]; b[i*4]  =(uint8_t)(out.u);
-                       b[i*4+1]=(uint8_t)(out.u>>8 );
-                       b[i*4+2]=(uint8_t)(out.u>>16);
-                       b[i*4+3]=(uint8_t)(out.u>>24); }
-    /* 空间不足(极端背压)整帧放弃，仍保持严格顺序不串帧 */
-    hid_up_enqueue(b, 40);
-}
-
 /* ==================== DMA 中断服务函数：只负责调度分配 ==================== */
 void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void DMA1_Channel2_IRQHandler(void)
@@ -146,9 +119,6 @@ void DMA1_Channel2_IRQHandler(void)
             /* 记录本次 ISR 用时的历史最劣(最大)值，us */
             uint32_t d = (uint32_t)(GetTime64_Us() - isr_t0);
             if (d > s_dma1_irq_max_us) s_dma1_irq_max_us = d;
-
-            /* 组一帧 JustFloat 注入 USBHS-HID(顺序 = 该次采样) */
-            hud_frame_push();
         }
     }
 }

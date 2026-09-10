@@ -43,6 +43,7 @@ int main(void)
     uint64_t last_print_tim = GetTime64_Us(), tim = 0;
     while (1)
     {
+        // hid_up_enqueue(b, 40);
         // usbhs_hid_poll();
 
         tim = GetTime64_Us();
