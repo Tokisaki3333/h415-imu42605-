@@ -4,10 +4,10 @@
 #include "spi_hw.h"                 /* SPI1_DMA_Rx_Setup */
 #include "sys_clk.h"                /* GetTime64_Us */
 
-/* ==================== 内部私有变量（仅本文件，DMA 缓冲） ==================== */
+/* ==================== 内部私有变量 ==================== */
 static volatile uint8_t rxfifo[512];
 
-/* DMA1_Channel2 中断单次执行耗时的最劣（最大）值，us；作为 HID 帧 ch8 上报 ISR 负载。 */
+/* DMA1_Channel2 中断单次执行耗时历史最劣值 us（备用，暂无消费者） */
 static volatile uint32_t s_dma1_irq_max_us = 0;
 
 /* ==================== 数据保持器实例 ==================== */
@@ -17,15 +17,9 @@ volatile v5f_hold_t g_v5f_hold = { 0 };
 static uint32_t s_last_gyro_cnt = 0, s_last_ist_cnt = 0, s_last_bmp_cnt = 0;
 static uint32_t s_last_gps_rmc_cnt = 0, s_last_gps_gga_cnt = 0, s_last_gps_gsa_cnt = 0;
 
-/* 共享区所有通道的时间戳已统一为 10 ns 计数（V3F 侧一律用 GetTime64_10Ns() 取），
- * 这里直接搬运即可，不再需要任何单位换算。 */
-
-/* ==================== 保持器维护：共享通道有新数据就搬进保持器 ====================
- * 跨核读端协议（与 mipc_shm.h 一致）：检测到 cnt 变化 → __sync_synchronize() → 再读 ts/数据/flags。
- * 写端是"写数据 → 写 ts → 屏障 → cnt++"，读端屏障与之配对：RISC-V 是弱内存序，load 之间
- * 可以重排，缺这个屏障就可能出现"看到新 cnt、却读到上一帧数据"。
- * 覆盖陀螺(仅 DRDY 时间戳，六轴原始值走 SPI DMA 帧)、磁力计、气压计、GPS RMC/GGA/GSA；
- * 低频文本由主循环直接读 g_shm->log，不在此搬运。 */
+/* ==================== 保持器维护 ====================
+ * 每通道都是"检测到 cnt 变化 → __sync_synchronize() → 读 ts/数据/flags"（与写端 release 配对；
+ * RISC-V 弱内存序下 load 可重排，缺此屏障会读到上一帧）。低频文本由主循环直接读 g_shm->log。 */
 static void hold_poll(void)
 {
     uint32_t c;
@@ -33,7 +27,7 @@ static void hold_poll(void)
     /* 陀螺通道：只有 DRDY 时间戳（六轴原始值走 SPI DMA 帧） */
     c = g_shm->gyro.hdr.cnt;
     if (c != s_last_gyro_cnt) {
-        __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
+        __sync_synchronize();               
         s_last_gyro_cnt = c;
         g_v5f_hold.imu.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gyro.hdr);
     }
@@ -41,7 +35,7 @@ static void hold_poll(void)
     /* IST8310（磁力计）：原始 LSB 直通 */
     c = g_shm->ist.hdr.cnt;
     if (c != s_last_ist_cnt) {
-        __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
+        __sync_synchronize();               
         s_last_ist_cnt = c;
         g_v5f_hold.mag.fresh.drdy_tick = shm_chan_ts_read(&g_shm->ist.hdr);
         g_v5f_hold.mag.lsb[0] = g_shm->ist.mx;
@@ -50,10 +44,10 @@ static void hold_poll(void)
         g_v5f_hold.mag.fresh.new_data = 1;      /* 数据写完后才置新数据信号 */
     }
 
-    /* BMP388（气压计）：共享区已是 float（℃ / Pa）直通，无需任何换算 */
+    /* BMP388（气压计）：float 直通 */
     c = g_shm->bmp.hdr.cnt;
     if (c != s_last_bmp_cnt) {
-        __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
+        __sync_synchronize();               
         s_last_bmp_cnt = c;
         g_v5f_hold.baro.fresh.drdy_tick = shm_chan_ts_read(&g_shm->bmp.hdr);
         g_v5f_hold.baro.temp_celsius  = g_shm->bmp.temp_celsius;   /* 共享区已是 float，无需换算 */
@@ -64,7 +58,7 @@ static void hold_poll(void)
     /* GPS RMC：经纬度保持共享区的 10^-7 ° 定标整数（float 精度不够），速度换算成 m/s */
     c = g_shm->gps_rmc.hdr.cnt;
     if (c != s_last_gps_rmc_cnt) {
-        __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
+        __sync_synchronize();               
         s_last_gps_rmc_cnt = c;
         g_v5f_hold.gps_rmc.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_rmc.hdr);
         g_v5f_hold.gps_rmc.fresh.flags     = g_shm->gps_rmc.flags;
@@ -79,7 +73,7 @@ static void hold_poll(void)
     /* GPS GGA：高度 cm→m、HDOP ×100→无量纲 float，定位质量/星数本就是小整数 */
     c = g_shm->gps_gga.hdr.cnt;
     if (c != s_last_gps_gga_cnt) {
-        __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
+        __sync_synchronize();               
         s_last_gps_gga_cnt = c;
         g_v5f_hold.gps_gga.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_gga.hdr);
         g_v5f_hold.gps_gga.fresh.flags     = g_shm->gps_gga.flags;
@@ -93,7 +87,7 @@ static void hold_poll(void)
     /* GPS GSA：PDOP/VDOP（共享区 ×100 定标整数 → 无量纲 float） */
     c = g_shm->gps_gsa.hdr.cnt;
     if (c != s_last_gps_gsa_cnt) {
-        __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
+        __sync_synchronize();               
         s_last_gps_gsa_cnt = c;
         g_v5f_hold.gps_gsa.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_gsa.hdr);
         g_v5f_hold.gps_gsa.fresh.flags     = g_shm->gps_gsa.flags;
@@ -112,10 +106,10 @@ void DMA1_Channel2_IRQHandler(void)
         if (g_shm) {
             uint64_t isr_t0 = GetTime64_Us();   /* ISR 计时起点 */
 
-            /* 共享区低频通道：有新数据就搬进保持器 */
+            /* 共享区通道：有新数据就搬进保持器 */
             hold_poll();
 
-            /* SPI 帧解析（温度 + 六轴）→ 保持器（DRDY 时刻已由 hold_poll 从陀螺通道搬入） */
+            /* SPI 帧解析（温度 + 六轴）→ 保持器（DRDY 时刻由 hold_poll 搬入） */
             g_v5f_hold.imu.temp_celsius = (int16_t)((rxfifo[1] << 8) | rxfifo[2]) / 132.48f + 25.0f;
             g_v5f_hold.imu.gyro_lsb[0]  = (int16_t)((rxfifo[9]  << 8) | rxfifo[10]);
             g_v5f_hold.imu.gyro_lsb[1]  = (int16_t)((rxfifo[11] << 8) | rxfifo[12]);
