@@ -114,10 +114,8 @@ void DMA1_Channel2_IRQHandler(void)
             g_v5f_hold.imu.accel_lsb[0] = (int16_t)((rxfifo[3]  << 8) | rxfifo[4]);
             g_v5f_hold.imu.accel_lsb[1] = (int16_t)((rxfifo[5]  << 8) | rxfifo[6]);
             g_v5f_hold.imu.accel_lsb[2] = (int16_t)((rxfifo[7]  << 8) | rxfifo[8]);
-            g_v5f_hold.imu.fresh.new_data = 1;  /* 所有字段写完后才置新数据信号 */
-
-            /* 共享区通道：有新数据就搬进保持器 */
             hold_poll();
+            g_v5f_hold.imu.fresh.new_data = 1;  /* 所有字段写完后才置新数据信号 */
 
             /* 主任务区开始 */
 
