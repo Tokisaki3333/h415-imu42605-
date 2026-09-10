@@ -2,10 +2,7 @@
 #include "hardware.h"
 #include "spi_hw.h"
 #include "mipc_v5.h"
-#include "SPI_rx.h"        /* SPI_DMA_Init */
-#include "observer.h"      /* g_v5f_obs（四元数来源） */
-#include "attitude.h"
-#include "ins.h"
+#include "SPI_rx.h"        /* SPI_DMA_Init / g_v5f_hold（数据保持器） */
 #include "sys_clk.h"
 #include "spi_flash_w25n.h"
 #include <inttypes.h>
@@ -29,7 +26,7 @@ int main(void)
     while (g_shm->v3f_cfg_done == 0) Delay_Ms(1);
     mipc_v5_sync(3);
 
-    SPI_DMA_Init();                     /* DMA 中断里调度姿态解算 */
+    SPI_DMA_Init();                     /* DMA 中断里维护保持器 + 组 HID 帧 */
 
     mipc_v5_sync(4);
     mipc_v5_sync(5);
@@ -53,11 +50,11 @@ int main(void)
         {
             last_print_tim = tim;
 
-            oled_printf(0, 0, "a%12d", (int)(g_v5f_obs.lat_e7));
-            oled_printf(0, 16, "o%12d", (int)(g_v5f_obs.lon_e7));
+            oled_printf(0, 0, "a%12d", (int)(g_v5f_hold.lat_e7));
+            oled_printf(0, 16, "o%12d", (int)(g_v5f_hold.lon_e7));
             oled_printf(0, 32, "P%02d S%02d H%02d.%02d",
-                        (int)g_v5f_obs.fix_quality, (int)g_v5f_obs.sat_num,
-                        (int)(g_v5f_obs.hdop_x100 / 100), (int)(g_v5f_obs.hdop_x100 % 100));
+                        (int)g_v5f_hold.fix_quality, (int)g_v5f_hold.sat_num,
+                        (int)(g_v5f_hold.hdop_x100 / 100), (int)(g_v5f_hold.hdop_x100 % 100));
         }
     }
 }

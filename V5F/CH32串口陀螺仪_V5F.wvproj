@@ -204,6 +204,7 @@
 							"${project}/Debug",
 							"${project}/Core",
 							"${project}/User",
+							"${project}/User/inc",
 							"${project}/Peripheral/inc",
 							"${project}/Common",
 							"${project}/Common/LVGL",
