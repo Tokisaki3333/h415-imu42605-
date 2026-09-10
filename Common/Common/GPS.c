@@ -166,7 +166,7 @@ static void gps_publish_rmc(void)
         g_shm->gps_rmc.date_valid = 1;
         g_shm->gps_rmc.date_ddmmyy = (uint32_t)parse_fixed(t, 0);
     }
-    shm_ts_write(&g_shm->gps_rmc.ts_drdy_us, gps_clk);
+    shm_ts_write(&g_shm->gps_rmc.ts_drdy_tick, gps_clk);
     g_shm->gps_rmc.cnt++;
 }
 
@@ -198,7 +198,7 @@ static void gps_publish_gga(void)
         g_shm->gps_gga.alt_valid = 1;
         g_shm->gps_gga.alt_cm = parse_fixed(t, 2);
     }
-    shm_ts_write(&g_shm->gps_gga.ts_drdy_us, gps_clk);
+    shm_ts_write(&g_shm->gps_gga.ts_drdy_tick, gps_clk);
     g_shm->gps_gga.cnt++;
 }
 
@@ -215,7 +215,7 @@ static void gps_publish_gsa(void)
         g_shm->gps_gsa.vdop_x100 = (uint16_t)parse_fixed(t, 2);
         g_shm->gps_gsa.dop_valid = 1;
     }
-    shm_ts_write(&g_shm->gps_gsa.ts_drdy_us, gps_clk);
+    shm_ts_write(&g_shm->gps_gsa.ts_drdy_tick, gps_clk);
     g_shm->gps_gsa.cnt++;
 }
 
@@ -461,7 +461,7 @@ void GPS_Check()
     if (wr_idx == GPS_RX_BUFFER_SIZE) wr_idx = 0;
 
     if (wr_idx != gps_rx_read_idx) {
-        uint64_t clk = GetTime64_Us();
+        uint64_t clk = GetTime64_10Ns();   /* 语句到达时刻：与全传感器统一 10 ns 计数 */
         if (wr_idx > gps_rx_read_idx) {
             /* 数据连续：按精确长度处理，不写哨兵（DMA 会覆盖哨兵导致误读旧数据） */
             parse_gps_data((uint8_t*)&RxBuffer2[gps_rx_read_idx],

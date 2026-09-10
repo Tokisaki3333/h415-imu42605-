@@ -23,7 +23,7 @@ void EXTI7_0_IRQHandler(void)
         EXTI_ClearITPendingBit(EXTI_Line0);
         /* 严谨：实际读 DRDY 引脚确认，防虚假/毛刺中断 */
         if (GPIO_ReadInputDataBit(GPIOE, GPIO_Pin_0) != 0) {
-            uint64_t ts_drdy = GetTime64_10Ns();   /* DRDY 鏃舵爣锛氶檧铻?=10Ns锛堟棫 渭s 宸插純锛? */
+            uint64_t ts_drdy = GetTime64_10Ns();   /* DRDY 时间戳：全传感器统一 10 ns 计数 */
             SPI_ReadMulti(0x1D, 14);             /* 读温度+六轴（不进共享区）*/
             shm_publish_gyro(ts_drdy);           /* 共享：ts(高→低)→屏障→cnt++ */
         }

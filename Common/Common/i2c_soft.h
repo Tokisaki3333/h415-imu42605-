@@ -50,7 +50,8 @@ void BMP388_TriggerMeasurement(void);
 uint8_t IST8310_Read(int16_t *mx, int16_t *my, int16_t *mz);
 uint8_t BMP388_Read(float *temp_c, float *press_pa);   /* 直接调用 bmp388 库的补偿函数 */
 
-/* ----- 等待传感器DRDY（返回实际等待 us；>= timeout_us 视为超时且不写 out_ts_drdy） ----- */
+/* ----- 等待传感器DRDY（返回实际等待 us；>= timeout_us 视为超时且不写 out_ts_drdy；
+ *        out_ts_drdy 为 DRDY 就绪时刻，单位 10 ns 计数） ----- */
 uint32_t IST8310_WaitDRDY(uint32_t timeout_us, uint64_t *out_ts_drdy);
 uint32_t BMP388_WaitDRDY(uint32_t timeout_us, uint64_t *out_ts_drdy);
 

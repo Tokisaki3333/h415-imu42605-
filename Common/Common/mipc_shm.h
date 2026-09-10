@@ -10,7 +10,7 @@
  * 发布-订阅协议（每个通道独立）：
  *   写端（小核）：写数据 → 写 ts 高 32 → 写 ts 低 32 → __sync_synchronize() → cnt++
  *   读端（大核）：cur = cnt；if (cur != last) { __sync_synchronize(); last = cur; 读 ts 低→高; 读数据; }
- * 时间戳均为 DRDY 就绪时刻（64 位 us），不是读完数据的时刻。
+ * 时间戳均为 DRDY 就绪时刻，单位统一为 10 ns 计数（64 位，1 tick = 10 ns，由 GetTime64_10Ns() 取），不是读完数据的时刻。
  * ===================================================================== */
 
 /* 64 位时间戳：显式拆高/低 32 位，保证"低 32 位最后写 / 最先读"（防撕裂） */
@@ -22,20 +22,20 @@ typedef union {
 /* 陀螺仪（ICM-42605）通道：2kHz DRDY 中断只共享时间戳；六轴数据走 SPI_rx DMA 通道 */
 typedef struct {
     volatile uint32_t cnt;          /* 帧序号（发布标记，最后写）*/
-    ts64_t            ts_drdy_us;   /* DRDY 上升沿时刻 */
+    ts64_t            ts_drdy_tick;   /* DRDY 上升沿时刻，10 ns 计数 */
 } gyro_chan_t;
 
 /* IST8310 通道 */
 typedef struct {
     volatile uint32_t cnt;          /* 帧序号（发布标记，最后写）*/
-    ts64_t            ts_drdy_us;   /* 就绪(DRDY)时刻 */
+    ts64_t            ts_drdy_tick;   /* 就绪(DRDY)时刻，10 ns 计数 */
     volatile int16_t  mx, my, mz;   /* 磁力计原始值 */
 } ist_chan_t;
 
 /* BMP388 通道（定点，与串口 A: 格式一致，避免浮点传递）*/
 typedef struct {
     volatile uint32_t cnt;          /* 帧序号（发布标记，最后写）*/
-    ts64_t            ts_drdy_us;   /* 就绪时刻（STATUS 轮询到 drdy）*/
+    ts64_t            ts_drdy_tick;   /* 就绪时刻（STATUS 轮询到 drdy），10 ns 计数 */
     volatile int32_t  temp_x1000;   /* 温度 ℃×1000（0.001℃） */
     volatile int32_t  press_x1000;  /* 压力 Pa×1000（0.001Pa，匹配 BMP388 分辨率） */
 } bmp_chan_t;
@@ -47,7 +47,7 @@ typedef struct {
  *          hdop/pdop/vdop ×100、alt cm、date ddmmyy */
 typedef struct {
     volatile uint32_t cnt;          /* RMC 帧序号（发布标记，最后写）*/
-    ts64_t            ts_drdy_us;   /* RMC 语句解析批次时刻 */
+    ts64_t            ts_drdy_tick;   /* RMC 语句解析批次时刻，10 ns 计数 */
     volatile uint8_t  status_valid; /* RMC 状态字段存在 */
     volatile uint8_t  status;       /* 'A' 有效 / 'V' 无效 */
     volatile uint8_t  pos_valid;    /* 经纬度存在 */
@@ -61,7 +61,7 @@ typedef struct {
 
 typedef struct {
     volatile uint32_t cnt;          /* GGA 帧序号（发布标记，最后写）*/
-    ts64_t            ts_drdy_us;   /* GGA 语句解析批次时刻 */
+    ts64_t            ts_drdy_tick;   /* GGA 语句解析批次时刻，10 ns 计数 */
     volatile uint8_t  quality_valid;
     volatile uint8_t  quality;      /* 0=无效 1=单点 2=差分 4=RTK固定 5=RTK浮点 */
     volatile uint8_t  sv_valid;
@@ -74,7 +74,7 @@ typedef struct {
 
 typedef struct {
     volatile uint32_t cnt;          /* GSA 帧序号（发布标记，最后写）*/
-    ts64_t            ts_drdy_us;   /* GSA 语句解析批次时刻 */
+    ts64_t            ts_drdy_tick;   /* GSA 语句解析批次时刻，10 ns 计数 */
     volatile uint8_t  dop_valid;    /* PDOP/VDOP 存在（各系统 GSA 独立计数，最新一条覆盖）*/
     volatile uint16_t pdop_x100;
     volatile uint16_t vdop_x100;
@@ -107,7 +107,7 @@ extern volatile shared_mem_t *g_shm;
 
 /* ---------------- 写端（小核）---------------- */
 
-/* 写 64 位时间戳：高 32 位先写，低 32 位最后写，随后发布屏障 */
+/* 写 64 位时间戳（本工程统一 10 ns 计数）：高 32 位先写，低 32 位最后写，随后发布屏障 */
 static inline void shm_ts_write(volatile ts64_t *ts, uint64_t value)
 {
     ts->u32[1] = (uint32_t)(value >> 32);   /* 高 32 位先写 */
@@ -118,7 +118,7 @@ static inline void shm_ts_write(volatile ts64_t *ts, uint64_t value)
 /* 陀螺仪：无数据字段，ts → cnt++ */
 static inline void shm_publish_gyro(uint64_t ts_drdy)
 {
-    shm_ts_write(&g_shm->gyro.ts_drdy_us, ts_drdy);
+    shm_ts_write(&g_shm->gyro.ts_drdy_tick, ts_drdy);
     g_shm->gyro.cnt++;
 }
 
@@ -128,7 +128,7 @@ static inline void shm_publish_ist(uint64_t ts_drdy, int16_t mx, int16_t my, int
     g_shm->ist.mx = mx;
     g_shm->ist.my = my;
     g_shm->ist.mz = mz;
-    shm_ts_write(&g_shm->ist.ts_drdy_us, ts_drdy);
+    shm_ts_write(&g_shm->ist.ts_drdy_tick, ts_drdy);
     g_shm->ist.cnt++;
 }
 
@@ -137,7 +137,7 @@ static inline void shm_publish_bmp(uint64_t ts_drdy, int32_t temp_x1000, int32_t
 {
     g_shm->bmp.temp_x1000  = temp_x1000;
     g_shm->bmp.press_x1000 = press_x1000;
-    shm_ts_write(&g_shm->bmp.ts_drdy_us, ts_drdy);
+    shm_ts_write(&g_shm->bmp.ts_drdy_tick, ts_drdy);
     g_shm->bmp.cnt++;
 }
 

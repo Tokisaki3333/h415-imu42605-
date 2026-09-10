@@ -152,7 +152,9 @@ void DumpRegTable(uint8_t dev7bit, uint8_t endReg)
     }
 }
 
-/* ==================== 传感器辅助 ==================== */
+/* ==================== 传感器辅助 ====================
+ * out_ts_drdy 回传的 DRDY 时间戳统一为 10 ns 计数（GetTime64_10Ns()），与共享区其它通道同基；
+ * 函数返回值仍是实际等待的 us 数。 */
 
 uint32_t IST8310_WaitDRDY(uint32_t timeout_us, uint64_t *out_ts_drdy)
 {
@@ -164,7 +166,7 @@ uint32_t IST8310_WaitDRDY(uint32_t timeout_us, uint64_t *out_ts_drdy)
             return (uint32_t)(GetTime64_Us() - t0);   /* 超时：不写时间戳，返回满等待 */
         }
     }
-    if (out_ts_drdy) *out_ts_drdy = GetTime64_Us();   /* DRDY 就绪时刻（紧贴检测到高）*/
+    if (out_ts_drdy) *out_ts_drdy = GetTime64_10Ns();   /* DRDY 就绪时刻（紧贴检测到高）*/
     return (uint32_t)(GetTime64_Us() - t0);           /* 实际等待 us */
 }
 
@@ -183,7 +185,7 @@ uint32_t BMP388_WaitDRDY(uint32_t timeout_us, uint64_t *out_ts_drdy)
             return (uint32_t)(GetTime64_Us() - t0);   /* 超时：不写时间戳，返回满等待 */
         }
     }
-    if (out_ts_drdy) *out_ts_drdy = GetTime64_Us();   /* DRDY 就绪时刻（紧贴轮询到 drdy）*/
+    if (out_ts_drdy) *out_ts_drdy = GetTime64_10Ns();   /* DRDY 就绪时刻（紧贴轮询到 drdy）*/
     return (uint32_t)(GetTime64_Us() - t0);           /* 实际等待 us */
 }
 /* ==================== 传感器初始化 ==================== */
