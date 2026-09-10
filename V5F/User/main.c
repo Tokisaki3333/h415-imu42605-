@@ -50,11 +50,13 @@ int main(void)
         {
             last_print_tim = tim;
 
-            oled_printf(0, 0, "a%12d", (int)(g_v5f_hold.lat_e7));
-            oled_printf(0, 16, "o%12d", (int)(g_v5f_hold.lon_e7));
+            /* 经纬度是 10^-7 ° 定标整数，按整数打印；HDOP 是 float，拆成整数与小数两位显示 */
+            oled_printf(0, 0, "a%12d", (int)(g_v5f_hold.gps_rmc.lat_e7));
+            oled_printf(0, 16, "o%12d", (int)(g_v5f_hold.gps_rmc.lon_e7));
             oled_printf(0, 32, "P%02d S%02d H%02d.%02d",
-                        (int)g_v5f_hold.fix_quality, (int)g_v5f_hold.sat_num,
-                        (int)(g_v5f_hold.hdop_x100 / 100), (int)(g_v5f_hold.hdop_x100 % 100));
+                        (int)g_v5f_hold.gps_gga.fix_quality, (int)g_v5f_hold.gps_gga.sat_num,
+                        (int)g_v5f_hold.gps_gga.hdop,
+                        (int)(g_v5f_hold.gps_gga.hdop * 100.0f) % 100);
         }
     }
 }

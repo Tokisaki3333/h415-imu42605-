@@ -11,57 +11,68 @@ static volatile uint8_t rxfifo[512];
 /* DMA1_Channel2 中断单次执行耗时的最劣（最大）值，us；作为 HID 帧 ch8 上报 ISR 负载。 */
 static volatile uint32_t s_dma1_irq_max_us = 0;
 
-/* ==================== 数据保持器实例 ====================
- * q0=1：无姿态解算，四元数恒为单位四元数。 */
-volatile v5f_hold_t g_v5f_hold = { .q0 = 1.0f };
+/* ==================== 数据保持器实例 ==================== */
+volatile v5f_hold_t g_v5f_hold = { .imu = { .quat = { 1.0f, 0.0f, 0.0f, 0.0f } } };
 
 /* ==================== 各共享通道 cnt 快照（变化检测用） ==================== */
 static uint32_t s_last_ist_cnt = 0, s_last_bmp_cnt = 0;
 static uint32_t s_last_gps_rmc_cnt = 0, s_last_gps_gga_cnt = 0;
 
+/* 共享区时间戳 → 保持器统一时基（10 ns 计数）：
+ * 陀螺通道本就是 GetTime64_10Ns()（10 ns 计数），其余通道是 GetTime64_Us()（μs），故 ×100。 */
+#define SHM_US_TO_TICK(us)  ((uint64_t)(us) * 100ULL)
+
 /* ==================== 保持器维护：共享通道有新数据就搬进保持器 ====================
  * 发布端顺序为"写数据 → 写 ts → 屏障 → cnt++"（见 mipc_shm.h），
- * 故检测到 cnt 变化后直接读数据即可，无需读取时间戳。
- * 只轮询带数据字段的通道：陀螺通道仅有 DRDY 时间戳（数据走 SPI DMA 帧）、
+ * 故检测到 cnt 变化后直接读数据即可。
+ * 只轮询带数据字段的通道：陀螺通道仅有 DRDY 时间戳（六轴数据走 SPI DMA 帧）、
  * GSA 只有 PDOP/VDOP（保持器不存）、低频文本由主循环直接读 g_shm->log，均无需在此搬运。 */
 static void hold_poll(void)
 {
     uint32_t c;
 
-    /* IST8310（磁力计） */
+    /* IST8310（磁力计）：原始 LSB 直通 */
     c = g_shm->ist.cnt;
     if (c != s_last_ist_cnt) {
         s_last_ist_cnt = c;
-        g_v5f_hold.mag_x = g_shm->ist.mx;
-        g_v5f_hold.mag_y = g_shm->ist.my;
-        g_v5f_hold.mag_z = g_shm->ist.mz;
+        g_v5f_hold.mag.fresh.drdy_tick = SHM_US_TO_TICK(shm_ts_read(&g_shm->ist.ts_drdy_us));
+        g_v5f_hold.mag.lsb[0] = g_shm->ist.mx;
+        g_v5f_hold.mag.lsb[1] = g_shm->ist.my;
+        g_v5f_hold.mag.lsb[2] = g_shm->ist.mz;
+        g_v5f_hold.mag.fresh.new_data = 1;      /* 数据写完后才置新数据信号 */
     }
 
-    /* BMP388（气压计）：定点直通 */
+    /* BMP388（气压计）：共享区是 ℃×1000 / Pa×1000 十进制定标整数 → 换算成 float 物理量 */
     c = g_shm->bmp.cnt;
     if (c != s_last_bmp_cnt) {
         s_last_bmp_cnt = c;
-        g_v5f_hold.bmp_temp_x1000  = g_shm->bmp.temp_x1000;
-        g_v5f_hold.bmp_press_x1000 = g_shm->bmp.press_x1000;
+        g_v5f_hold.baro.fresh.drdy_tick = SHM_US_TO_TICK(shm_ts_read(&g_shm->bmp.ts_drdy_us));
+        g_v5f_hold.baro.temp_celsius    = (float)g_shm->bmp.temp_x1000  * 1e-3f;
+        g_v5f_hold.baro.press_pascal    = (float)g_shm->bmp.press_x1000 * 1e-3f;
+        g_v5f_hold.baro.fresh.new_data  = 1;
     }
 
-    /* GPS RMC：经纬度 / 对地速度 */
+    /* GPS RMC：经纬度保持共享区的 10^-7 ° 定标整数（float 精度不够），速度换算成 m/s */
     c = g_shm->gps_rmc.cnt;
     if (c != s_last_gps_rmc_cnt) {
         s_last_gps_rmc_cnt = c;
-        g_v5f_hold.lat_e7     = g_shm->gps_rmc.lat_e7;
-        g_v5f_hold.lon_e7     = g_shm->gps_rmc.lon_e7;
-        g_v5f_hold.speed_cmps = g_shm->gps_rmc.speed_cmps;
+        g_v5f_hold.gps_rmc.fresh.drdy_tick = SHM_US_TO_TICK(shm_ts_read(&g_shm->gps_rmc.ts_drdy_us));
+        g_v5f_hold.gps_rmc.lat_e7        = g_shm->gps_rmc.lat_e7;
+        g_v5f_hold.gps_rmc.lon_e7        = g_shm->gps_rmc.lon_e7;
+        g_v5f_hold.gps_rmc.speed_mps     = (float)g_shm->gps_rmc.speed_cmps * 1e-2f;
+        g_v5f_hold.gps_rmc.fresh.new_data = 1;
     }
 
-    /* GPS GGA：定位质量 / 星数 / 高度 / HDOP */
+    /* GPS GGA：高度 cm→m、HDOP ×100→无量纲 float，定位质量/星数本就是小整数 */
     c = g_shm->gps_gga.cnt;
     if (c != s_last_gps_gga_cnt) {
         s_last_gps_gga_cnt = c;
-        g_v5f_hold.alt_cm      = g_shm->gps_gga.alt_cm;
-        g_v5f_hold.fix_quality = g_shm->gps_gga.quality;
-        g_v5f_hold.sat_num     = g_shm->gps_gga.sv;
-        g_v5f_hold.hdop_x100   = g_shm->gps_gga.hdop_x100;
+        g_v5f_hold.gps_gga.fresh.drdy_tick = SHM_US_TO_TICK(shm_ts_read(&g_shm->gps_gga.ts_drdy_us));
+        g_v5f_hold.gps_gga.alt_m        = (float)g_shm->gps_gga.alt_cm * 1e-2f;
+        g_v5f_hold.gps_gga.fix_quality  = g_shm->gps_gga.quality;
+        g_v5f_hold.gps_gga.sat_num      = g_shm->gps_gga.sv;
+        g_v5f_hold.gps_gga.hdop         = (float)g_shm->gps_gga.hdop_x100 * 1e-2f;
+        g_v5f_hold.gps_gga.fresh.new_data = 1;
     }
 }
 
@@ -77,7 +88,8 @@ static void hud_frame_push(void)
     int     i;
 
     out.u = 0x7F800000u;                     /* 帧尾 +Inf */
-    q[0]=g_v5f_hold.q0; q[1]=g_v5f_hold.q1; q[2]=g_v5f_hold.q2; q[3]=g_v5f_hold.q3;
+    q[0]=g_v5f_hold.imu.quat[0]; q[1]=g_v5f_hold.imu.quat[1];
+    q[2]=g_v5f_hold.imu.quat[2]; q[3]=g_v5f_hold.imu.quat[3];
     q[4]=0.0f;          q[5]=0.0f;          q[6]=0.0f;   /* 零偏通道：解算模块已弃用 */
     q[7]=0.0f;                                          /* 静止计数：解算模块已弃用 */
     q[8]=(float)s_dma1_irq_max_us;
@@ -103,14 +115,16 @@ void DMA1_Channel2_IRQHandler(void)
             /* 共享区低频通道：有新数据就搬进保持器 */
             hold_poll();
 
-            /* SPI 帧解析（温度 + 六轴）→ 保持器 */
-            g_v5f_hold.gyro_temp_celsius = (int16_t)((rxfifo[1] << 8) | rxfifo[2]) / 132.48f + 25.0f;
-            g_v5f_hold.gyro_x  = (int16_t)((rxfifo[9]  << 8) | rxfifo[10]);
-            g_v5f_hold.gyro_y  = (int16_t)((rxfifo[11] << 8) | rxfifo[12]);
-            g_v5f_hold.gyro_z  = (int16_t)((rxfifo[13] << 8) | rxfifo[14]);
-            g_v5f_hold.accel_x = (int16_t)((rxfifo[3]  << 8) | rxfifo[4]);
-            g_v5f_hold.accel_y = (int16_t)((rxfifo[5]  << 8) | rxfifo[6]);
-            g_v5f_hold.accel_z = (int16_t)((rxfifo[7]  << 8) | rxfifo[8]);
+            /* SPI 帧解析（温度 + 六轴）→ 保持器；DRDY 时刻取共享区陀螺通道（本就是 10 ns 计数） */
+            g_v5f_hold.imu.fresh.drdy_tick = shm_ts_read(&g_shm->gyro.ts_drdy_us);
+            g_v5f_hold.imu.temp_celsius = (int16_t)((rxfifo[1] << 8) | rxfifo[2]) / 132.48f + 25.0f;
+            g_v5f_hold.imu.gyro_lsb[0]  = (int16_t)((rxfifo[9]  << 8) | rxfifo[10]);
+            g_v5f_hold.imu.gyro_lsb[1]  = (int16_t)((rxfifo[11] << 8) | rxfifo[12]);
+            g_v5f_hold.imu.gyro_lsb[2]  = (int16_t)((rxfifo[13] << 8) | rxfifo[14]);
+            g_v5f_hold.imu.accel_lsb[0] = (int16_t)((rxfifo[3]  << 8) | rxfifo[4]);
+            g_v5f_hold.imu.accel_lsb[1] = (int16_t)((rxfifo[5]  << 8) | rxfifo[6]);
+            g_v5f_hold.imu.accel_lsb[2] = (int16_t)((rxfifo[7]  << 8) | rxfifo[8]);
+            g_v5f_hold.imu.fresh.new_data = 1;  /* 所有字段写完后才置新数据信号 */
 
             /* -------- 重新触发 DMA 接收 -------- */
             GPIO_SetBits(GPIOF, GPIO_Pin_4);
