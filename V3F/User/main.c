@@ -106,6 +106,6 @@ int main(void)
 //BMP388就绪后无空闲时间
 
         if (BMP388_Read(&temp_c, &press_pa) == 0 && ts_bmp != 0)
-            shm_publish_bmp(ts_bmp, (int32_t)(temp_c * 1000.0f), (int32_t)(press_pa * 1000.0f));
+            shm_publish_bmp(ts_bmp, temp_c, press_pa);   /* 温度/气压 float 直通，不再 ×1000 定点 */
     }
 }

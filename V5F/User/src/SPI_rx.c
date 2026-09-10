@@ -3,7 +3,6 @@
 #include "hardware.h"               /* ch32h417.h + debug.h：外设寄存器 / 中断 / Core_ID_V5F */
 #include "spi_hw.h"                 /* SPI1_DMA_Rx_Setup */
 #include "sys_clk.h"                /* GetTime64_Us */
-#include "usbd_compatibility_hid.h" /* hid_up_enqueue */
 
 /* ==================== 内部私有变量（仅本文件，DMA 缓冲） ==================== */
 static volatile uint8_t rxfifo[512];
@@ -12,79 +11,95 @@ static volatile uint8_t rxfifo[512];
 static volatile uint32_t s_dma1_irq_max_us = 0;
 
 /* ==================== 数据保持器实例 ==================== */
-volatile v5f_hold_t g_v5f_hold = { .imu = { .quat = { 1.0f, 0.0f, 0.0f, 0.0f } } };
+volatile v5f_hold_t g_v5f_hold = { 0 };
 
 /* ==================== 各共享通道 cnt 快照（变化检测用） ==================== */
 static uint32_t s_last_gyro_cnt = 0, s_last_ist_cnt = 0, s_last_bmp_cnt = 0;
-static uint32_t s_last_gps_rmc_cnt = 0, s_last_gps_gga_cnt = 0;
+static uint32_t s_last_gps_rmc_cnt = 0, s_last_gps_gga_cnt = 0, s_last_gps_gsa_cnt = 0;
 
 /* 共享区所有通道的时间戳已统一为 10 ns 计数（V3F 侧一律用 GetTime64_10Ns() 取），
  * 这里直接搬运即可，不再需要任何单位换算。 */
 
 /* ==================== 保持器维护：共享通道有新数据就搬进保持器 ====================
- * 跨核读端协议（与 mipc_shm.h 一致）：检测到 cnt 变化 → __sync_synchronize() → 再读数据/ts。
+ * 跨核读端协议（与 mipc_shm.h 一致）：检测到 cnt 变化 → __sync_synchronize() → 再读 ts/数据/flags。
  * 写端是"写数据 → 写 ts → 屏障 → cnt++"，读端屏障与之配对：RISC-V 是弱内存序，load 之间
  * 可以重排，缺这个屏障就可能出现"看到新 cnt、却读到上一帧数据"。
- * 只搬运有内容的通道：陀螺通道只有 DRDY 时间戳（六轴原始值走 SPI DMA 帧）、
- * GSA 只有 PDOP/VDOP（保持器不存）、低频文本由主循环直接读 g_shm->log。 */
+ * 覆盖陀螺(仅 DRDY 时间戳，六轴原始值走 SPI DMA 帧)、磁力计、气压计、GPS RMC/GGA/GSA；
+ * 低频文本由主循环直接读 g_shm->log，不在此搬运。 */
 static void hold_poll(void)
 {
     uint32_t c;
 
     /* 陀螺通道：只有 DRDY 时间戳（六轴原始值走 SPI DMA 帧） */
-    c = g_shm->gyro.cnt;
+    c = g_shm->gyro.hdr.cnt;
     if (c != s_last_gyro_cnt) {
         __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
         s_last_gyro_cnt = c;
-        g_v5f_hold.imu.fresh.drdy_tick = shm_ts_read(&g_shm->gyro.ts_drdy_tick);
+        g_v5f_hold.imu.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gyro.hdr);
     }
 
     /* IST8310（磁力计）：原始 LSB 直通 */
-    c = g_shm->ist.cnt;
+    c = g_shm->ist.hdr.cnt;
     if (c != s_last_ist_cnt) {
         __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
         s_last_ist_cnt = c;
-        g_v5f_hold.mag.fresh.drdy_tick = shm_ts_read(&g_shm->ist.ts_drdy_tick);
+        g_v5f_hold.mag.fresh.drdy_tick = shm_chan_ts_read(&g_shm->ist.hdr);
         g_v5f_hold.mag.lsb[0] = g_shm->ist.mx;
         g_v5f_hold.mag.lsb[1] = g_shm->ist.my;
         g_v5f_hold.mag.lsb[2] = g_shm->ist.mz;
         g_v5f_hold.mag.fresh.new_data = 1;      /* 数据写完后才置新数据信号 */
     }
 
-    /* BMP388（气压计）：共享区是 ℃×1000 / Pa×1000 十进制定标整数 → 换算成 float 物理量 */
-    c = g_shm->bmp.cnt;
+    /* BMP388（气压计）：共享区已是 float（℃ / Pa）直通，无需任何换算 */
+    c = g_shm->bmp.hdr.cnt;
     if (c != s_last_bmp_cnt) {
         __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
         s_last_bmp_cnt = c;
-        g_v5f_hold.baro.fresh.drdy_tick = shm_ts_read(&g_shm->bmp.ts_drdy_tick);
-        g_v5f_hold.baro.temp_celsius    = (float)g_shm->bmp.temp_x1000  * 1e-3f;
-        g_v5f_hold.baro.press_pascal    = (float)g_shm->bmp.press_x1000 * 1e-3f;
+        g_v5f_hold.baro.fresh.drdy_tick = shm_chan_ts_read(&g_shm->bmp.hdr);
+        g_v5f_hold.baro.temp_celsius  = g_shm->bmp.temp_celsius;   /* 共享区已是 float，无需换算 */
+        g_v5f_hold.baro.press_pascal  = g_shm->bmp.press_pascal;
         g_v5f_hold.baro.fresh.new_data  = 1;
     }
 
     /* GPS RMC：经纬度保持共享区的 10^-7 ° 定标整数（float 精度不够），速度换算成 m/s */
-    c = g_shm->gps_rmc.cnt;
+    c = g_shm->gps_rmc.hdr.cnt;
     if (c != s_last_gps_rmc_cnt) {
         __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
         s_last_gps_rmc_cnt = c;
-        g_v5f_hold.gps_rmc.fresh.drdy_tick = shm_ts_read(&g_shm->gps_rmc.ts_drdy_tick);
+        g_v5f_hold.gps_rmc.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_rmc.hdr);
+        g_v5f_hold.gps_rmc.fresh.flags     = g_shm->gps_rmc.flags;
         g_v5f_hold.gps_rmc.lat_e7        = g_shm->gps_rmc.lat_e7;
         g_v5f_hold.gps_rmc.lon_e7        = g_shm->gps_rmc.lon_e7;
         g_v5f_hold.gps_rmc.speed_mps     = (float)g_shm->gps_rmc.speed_cmps * 1e-2f;
+        g_v5f_hold.gps_rmc.status         = g_shm->gps_rmc.status;
+        g_v5f_hold.gps_rmc.date_ddmmyy    = g_shm->gps_rmc.date_ddmmyy;
         g_v5f_hold.gps_rmc.fresh.new_data = 1;
     }
 
     /* GPS GGA：高度 cm→m、HDOP ×100→无量纲 float，定位质量/星数本就是小整数 */
-    c = g_shm->gps_gga.cnt;
+    c = g_shm->gps_gga.hdr.cnt;
     if (c != s_last_gps_gga_cnt) {
         __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
         s_last_gps_gga_cnt = c;
-        g_v5f_hold.gps_gga.fresh.drdy_tick = shm_ts_read(&g_shm->gps_gga.ts_drdy_tick);
+        g_v5f_hold.gps_gga.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_gga.hdr);
+        g_v5f_hold.gps_gga.fresh.flags     = g_shm->gps_gga.flags;
         g_v5f_hold.gps_gga.alt_m        = (float)g_shm->gps_gga.alt_cm * 1e-2f;
         g_v5f_hold.gps_gga.fix_quality  = g_shm->gps_gga.quality;
         g_v5f_hold.gps_gga.sat_num      = g_shm->gps_gga.sv;
         g_v5f_hold.gps_gga.hdop         = (float)g_shm->gps_gga.hdop_x100 * 1e-2f;
         g_v5f_hold.gps_gga.fresh.new_data = 1;
+    }
+
+    /* GPS GSA：PDOP/VDOP（共享区 ×100 定标整数 → 无量纲 float） */
+    c = g_shm->gps_gsa.hdr.cnt;
+    if (c != s_last_gps_gsa_cnt) {
+        __sync_synchronize();               /* 读端 acquire：与写端 release 屏障配对 */
+        s_last_gps_gsa_cnt = c;
+        g_v5f_hold.gps_gsa.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_gsa.hdr);
+        g_v5f_hold.gps_gsa.fresh.flags     = g_shm->gps_gsa.flags;
+        g_v5f_hold.gps_gsa.pdop = (float)g_shm->gps_gsa.pdop_x100 * 1e-2f;
+        g_v5f_hold.gps_gsa.vdop = (float)g_shm->gps_gsa.vdop_x100 * 1e-2f;
+        g_v5f_hold.gps_gsa.fresh.new_data = 1;
     }
 }
 

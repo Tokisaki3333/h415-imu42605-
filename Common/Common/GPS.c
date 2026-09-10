@@ -82,8 +82,10 @@ static void parser_reset(GpsParser *p, uint8_t cs_init, uint32_t first_abs)
 }
 
 /* ================= GPS 共享区发布（V3F → V5F） =================
- * 每条校验通过的 RMC/GGA/GSA 语句发布一帧；某字段本帧缺失时 *_valid=0
- * （显式空标志，勿用值判空）。数值全部定点化，避免跨核浮点传递。 */
+ * 每条校验通过的 RMC/GGA/GSA 语句发布一帧；某字段本帧缺失时对应 flags 位为 0、
+ * 数值同时清零（显式空标志，判空一律查 flags 位，勿用值判空）。
+ * GPS 各字段保持定点整数（lat/lon ×1e7 度、speed cm/s、hdop/pdop/vdop ×100、alt cm）：
+ * 字串解析天然是整数，且经纬度用 float 精度不够；跨核浮点的取舍见 mipc_shm.h。 */
 
 /* 提取字段文本到栈缓冲（字段短；按绝对下标跨回绕安全） */
 static void field_copy(char *dst, uint8_t dst_sz, uint32_t fabs, uint8_t flen)
@@ -136,13 +138,13 @@ static uint32_t knots_to_cmps(const char *s)
 static void gps_publish_rmc(void)
 {
     char t[16];
-    g_shm->gps_rmc.status_valid = 0; g_shm->gps_rmc.status = 0;
-    g_shm->gps_rmc.pos_valid = 0;    g_shm->gps_rmc.lat_e7 = 0; g_shm->gps_rmc.lon_e7 = 0;
-    g_shm->gps_rmc.speed_valid = 0;  g_shm->gps_rmc.speed_cmps = 0;
-    g_shm->gps_rmc.date_valid = 0;   g_shm->gps_rmc.date_ddmmyy = 0;
+    /* 本帧缺失的字段先显式清空并清 flags 位（0 值本身合法，判空一律查 flags） */
+    g_shm->gps_rmc.flags = 0;
+    g_shm->gps_rmc.status = 0;      g_shm->gps_rmc.lat_e7 = 0; g_shm->gps_rmc.lon_e7 = 0;
+    g_shm->gps_rmc.speed_cmps = 0;  g_shm->gps_rmc.date_ddmmyy = 0;
 
     if (rmc_p.flen[2] > 0) {
-        g_shm->gps_rmc.status_valid = 1;
+        g_shm->gps_rmc.flags |= SHM_RMC_STATUS;
         g_shm->gps_rmc.status = (uint8_t)buf_at(rmc_p.fabs[2]);
     }
     if (rmc_p.flen[3] > 0 && rmc_p.flen[5] > 0) {
@@ -152,71 +154,71 @@ static void gps_publish_rmc(void)
         field_copy(t, sizeof t, rmc_p.fabs[5], rmc_p.flen[5]);
         int32_t lon = latlon_to_e7(t);
         if (rmc_p.flen[6] > 0 && buf_at(rmc_p.fabs[6]) == 'W') lon = -lon;
-        g_shm->gps_rmc.pos_valid = 1;
+        g_shm->gps_rmc.flags |= SHM_RMC_POS;
         g_shm->gps_rmc.lat_e7 = lat;
         g_shm->gps_rmc.lon_e7 = lon;
     }
     if (rmc_p.flen[7] > 0) {
         field_copy(t, sizeof t, rmc_p.fabs[7], rmc_p.flen[7]);
-        g_shm->gps_rmc.speed_valid = 1;
-        g_shm->gps_rmc.speed_cmps = knots_to_cmps(t);
+        uint32_t cmps = knots_to_cmps(t);
+        g_shm->gps_rmc.flags |= SHM_RMC_SPEED;
+        g_shm->gps_rmc.speed_cmps = (cmps > 65535u) ? 65535u : (uint16_t)cmps;   /* uint16 饱和 */
     }
     if (rmc_p.flen[9] > 0) {
         field_copy(t, sizeof t, rmc_p.fabs[9], rmc_p.flen[9]);
-        g_shm->gps_rmc.date_valid = 1;
+        g_shm->gps_rmc.flags |= SHM_RMC_DATE;
         g_shm->gps_rmc.date_ddmmyy = (uint32_t)parse_fixed(t, 0);
     }
-    shm_ts_write(&g_shm->gps_rmc.ts_drdy_tick, gps_clk);
-    g_shm->gps_rmc.cnt++;
+    shm_chan_ts_write(&g_shm->gps_rmc.hdr, gps_clk);
+    g_shm->gps_rmc.hdr.cnt++;
 }
 
 /* GGA 通道发布 */
 static void gps_publish_gga(void)
 {
     char t[16];
-    g_shm->gps_gga.quality_valid = 0; g_shm->gps_gga.quality = 0;
-    g_shm->gps_gga.sv_valid = 0;      g_shm->gps_gga.sv = 0;
-    g_shm->gps_gga.hdop_valid = 0;    g_shm->gps_gga.hdop_x100 = 0;
-    g_shm->gps_gga.alt_valid = 0;     g_shm->gps_gga.alt_cm = 0;
+    g_shm->gps_gga.flags = 0;
+    g_shm->gps_gga.quality = 0; g_shm->gps_gga.sv = 0;
+    g_shm->gps_gga.hdop_x100 = 0; g_shm->gps_gga.alt_cm = 0;
 
     if (gga_p.flen[6] > 0) {
-        g_shm->gps_gga.quality_valid = 1;
+        g_shm->gps_gga.flags |= SHM_GGA_QUALITY;
         g_shm->gps_gga.quality = (uint8_t)(buf_at(gga_p.fabs[6]) - '0');   /* '0'-'6' → 数值 0-6 */
     }
     if (gga_p.flen[7] > 0) {
         field_copy(t, sizeof t, gga_p.fabs[7], gga_p.flen[7]);
-        g_shm->gps_gga.sv_valid = 1;
+        g_shm->gps_gga.flags |= SHM_GGA_SV;
         g_shm->gps_gga.sv = (uint8_t)parse_fixed(t, 0);
     }
     if (gga_p.flen[8] > 0) {
         field_copy(t, sizeof t, gga_p.fabs[8], gga_p.flen[8]);
-        g_shm->gps_gga.hdop_valid = 1;
+        g_shm->gps_gga.flags |= SHM_GGA_HDOP;
         g_shm->gps_gga.hdop_x100 = (uint16_t)parse_fixed(t, 2);
     }
     if (gga_p.flen[9] > 0) {
         field_copy(t, sizeof t, gga_p.fabs[9], gga_p.flen[9]);
-        g_shm->gps_gga.alt_valid = 1;
+        g_shm->gps_gga.flags |= SHM_GGA_ALT;
         g_shm->gps_gga.alt_cm = parse_fixed(t, 2);
     }
-    shm_ts_write(&g_shm->gps_gga.ts_drdy_tick, gps_clk);
-    g_shm->gps_gga.cnt++;
+    shm_chan_ts_write(&g_shm->gps_gga.hdr, gps_clk);
+    g_shm->gps_gga.hdr.cnt++;
 }
 
 /* GSA 通道发布（各系统一条，最新一条覆盖） */
 static void gps_publish_gsa(void)
 {
     char t[16];
-    g_shm->gps_gsa.dop_valid = 0;    g_shm->gps_gsa.pdop_x100 = 0; g_shm->gps_gsa.vdop_x100 = 0;
+    g_shm->gps_gsa.flags = 0;
 
     if (gsa_p.flen[15] > 0 && gsa_p.flen[17] > 0) {
         field_copy(t, sizeof t, gsa_p.fabs[15], gsa_p.flen[15]);
         g_shm->gps_gsa.pdop_x100 = (uint16_t)parse_fixed(t, 2);
         field_copy(t, sizeof t, gsa_p.fabs[17], gsa_p.flen[17]);
         g_shm->gps_gsa.vdop_x100 = (uint16_t)parse_fixed(t, 2);
-        g_shm->gps_gsa.dop_valid = 1;
+        g_shm->gps_gsa.flags |= SHM_GSA_DOP;
     }
-    shm_ts_write(&g_shm->gps_gsa.ts_drdy_tick, gps_clk);
-    g_shm->gps_gsa.cnt++;
+    shm_chan_ts_write(&g_shm->gps_gsa.hdr, gps_clk);
+    g_shm->gps_gsa.hdr.cnt++;
 }
 
 /* 按当前活跃命令发布对应语句帧 */
