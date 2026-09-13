@@ -1,0 +1,182 @@
+#include "v5f_proc.h"
+
+/* =====================================================================
+ * 处理函数 1：陀螺三轴零偏校正
+ *
+ *   out[i] = (gyro_lsb[i] - bias[i]) / g_v5f_gyro_lsb_per_dps[i]   （°/s，逐轴标度）
+ *
+ *   启动初值：直接取标定常量（GB_BIAS0_*，见下），上电即在零点附近，
+ *              不需要运行时取均值；否则启动偏置（实测 z 轴 0.7 dps）会被
+ *              动静判定当成运动，导致牵引被永久冻结。
+ *   牵引    ：静止时一阶牵引 bias += (raw - bias) · dt/τ，分两段：
+ *              启动段 τ_boot = 2 s —— 上电初值残差 e0（标定常量与本机实际零点之差，
+ *                实测本机 0.026 dps、会话间散布 ≤0.037 dps、换温度可达 0.1~0.3 dps）
+ *                按 e^(-t/τ) 衰减；τ 越小残余收敛越快，且牵引噪声
+ *                σ_b = σ_raw·sqrt(Δt/2τ) 在 τ=2 s 时仅 6.8e-4 dps，相对 e0 可忽略。
+ *              工作段 τ_work = 12 s —— 3τ_boot = 6 s 的**累计静止**后切入并长期保持：
+ *                残余再按 τ_work 平滑，对偶发误判静止的抵抗力比 τ_boot 强 6 倍。
+ *              两段在 3τ_boot 处按"已累计静止时长"切换，不用上电墙上时间
+ *              （一动就冻结、时长不涨，自然不会误切）。
+ *   收敛判定：累计静止 ≥ 3τ_boot = 6 s → s_boot_done 锁存 = h->imu.bias_ok。
+ *              锁存不因回退清除：回退恢复的是运动前（通常已收敛）的快照，
+ *              且此时设备多半正在转，重新关掉收敛标志没有意义。
+ *              实际残余 = e0·e^(-3) ≈ 5%·e0（本机 e0=0.026 dps → 1.3e-3 dps ≈ 4.7°/h，
+ *              与实测 48 s 处 ≤1.9e-3 dps 的量级一致）。
+ *              处理函数 3（四元数）以 bias_ok 为门：收敛前不出姿态。
+ *              → 静止下校正输出趋于 0；运动时冻结（不牵引）。
+ *   回溯记录：内部每 20 ms 存一份 bias 快照，环形 64 份 = 1.28 s；
+ *              外部（处理函数 2）告知"静止→运动"边沿时回退若干粒度，
+ *              即把 bias 恢复到该粒度之前的快照值，从该值继续牵引。
+ *              回退粒度数由门控给出，并钳位到"本段静止已累计的粒度数"，
+ *              绝不回退到上一段运动期间的快照。
+ *
+ *   全部状态为文件静态，仅被 DMA1_Channel2_IRQHandler 主任务区单线程调用，无需加锁。
+ *   时间基准统一用 h->imu.fresh.drdy_tick（10 ns 计数），与调用次数无关。
+ * ===================================================================== */
+
+#define GB_TAU_TICKS       1200000000ULL  /* τ_work = 12 s（单位：10 ns 计数） */
+#define GB_TAU_BOOT_TICKS   200000000ULL  /* τ_boot = 2 s：启动段激进牵引 */
+#define GB_BOOT_TICKS       (3ULL * GB_TAU_BOOT_TICKS)    /* 3τ_boot = 6 s：切 τ_work + 判收敛 */
+#define GB_SNAP_TICKS       20000000ULL   /* 回溯粒度 = 20 ms */
+#define GB_HIST_DEPTH       64u           /* 回溯深度 64 × 20 ms = 1.28 s */
+#define GB_ALPHA_WORK_TICK  (1.0f / 1200000000.0f)        /* 工作段每 tick 牵引系数 = 1/τ_work */
+#define GB_ALPHA_BOOT_TICK  (1.0f /  200000000.0f)        /* 启动段每 tick 牵引系数 = 1/τ_boot */
+
+/* 零偏初值：由 151 s 静止记录 serial_runtime_20260912_215604 标定，单位 LSB。
+ *   bias 通道中值：x=1.0334  y=0.8494  z=12.0910 LSB
+ *                （= 0.0630 / 0.0518 / 0.7373 dps，×16.4 换算）
+ *   bias 通道均值：x=1.0277  y=0.8499  z=12.0916 LSB（与中值差 < 0.006 LSB，取中值）*/
+#define GB_BIAS0_LSB_X      1.0334f
+#define GB_BIAS0_LSB_Y      0.8494f
+#define GB_BIAS0_LSB_Z     12.0910f
+
+/* 逐轴标度表（标定出处与算式见 v5f_proc.h）：dps = LSB / g_v5f_gyro_lsb_per_dps[轴] */
+const float g_v5f_gyro_lsb_per_dps[3] = {
+    V5F_GYRO_LSB_PER_DPS_X,
+    V5F_GYRO_LSB_PER_DPS_Y,
+    V5F_GYRO_LSB_PER_DPS_Z
+};
+
+static float    s_bias[3] = { GB_BIAS0_LSB_X, GB_BIAS0_LSB_Y, GB_BIAS0_LSB_Z };
+static float    s_hist[3][GB_HIST_DEPTH];         /* 每个 20 ms 粒度一份 bias 快照 */
+static uint32_t s_head;                           /* s_hist 中最近一份快照的下标 */
+static uint64_t s_last_tick;                      /* 上一帧 DRDY 时刻 */
+static uint64_t s_next_snap;                      /* 下一个快照边界时刻 */
+static uint64_t s_static_ticks;                   /* 自上次回退(或上电)起累计的静止时长 */
+static uint8_t  s_boot_done;                      /* 启动牵引完成（累计静止 ≥ 3τ_boot）后锁存
+                                                   * = h->imu.bias_ok；不回退清除 */
+static uint8_t  s_prev_static;                    /* 上一帧的门控状态（边沿判定用） */
+static uint16_t s_static_gran;                    /* 本段静止已累计的 20 ms 粒度数 */
+static uint16_t s_evidence_gran;                  /* 累积静止证据（粒度数，回退时扣减）
+                                                   * 供处理函数 2 查判静阈值表 */
+#define GB_EVIDENCE_MAX  ((uint16_t)(V5F_DET_THR_NBUCK << V5F_DET_THR_SHIFT))  /* 16*128 = 2048 粒 */
+
+/* 写一份快照（在本帧牵引之后调用，记录该粒度边界的 bias） */
+static void gb_snapshot(uint8_t is_static)
+{
+    uint32_t i;
+
+    s_head = (s_head + 1u) % GB_HIST_DEPTH;
+    for (i = 0u; i < 3u; i++) s_hist[i][s_head] = s_bias[i];
+
+    if (is_static != 0u) {                        /* 静止段粒度数：回退钳位用 */
+        if (s_static_gran < GB_HIST_DEPTH) s_static_gran++;
+        if (s_evidence_gran < GB_EVIDENCE_MAX) s_evidence_gran++;   /* 证据只增不减 */
+    } else {
+        s_static_gran = 0u;                      /* 证据不因运动清零：它是 bias 的累积依据 */
+    }
+}
+
+/* 回退 granules 个 20 ms 粒度：bias 取该粒度的快照，并覆盖当前槽使历史与现值一致 */
+static void gb_rollback(uint32_t granules)
+{
+    uint32_t i, back, idx;
+
+    back = (granules > GB_HIST_DEPTH) ? GB_HIST_DEPTH : granules;      /* 饱和到最深可用粒度 */
+    idx  = (s_head + GB_HIST_DEPTH - back) % GB_HIST_DEPTH;
+    for (i = 0u; i < 3u; i++) {
+        s_bias[i]         = s_hist[i][idx];
+        s_hist[i][s_head] = s_bias[i];
+    }
+    s_static_ticks = 0u;    /* 本段静止时长作废（启动段 τ_boot 判据随之重来；
+                             * s_boot_done 是锁存，不受回退影响） */
+    /* 回退等于把这 back 个粒度的牵引成果丢掉：证据量同步扣减，
+     * 于是处理函数 2 的阈值会相应回升（证据不足 -> 阈值抬高）。 */
+    s_evidence_gran = (s_evidence_gran > back) ? (uint16_t)(s_evidence_gran - back) : 0u;
+}
+
+uint8_t v5f_proc_gyro_bias(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gate)
+{
+    uint64_t tick, dt;
+    uint32_t i;
+    uint8_t  is_static, rb;
+    float    dv[3], bv[3];                   /* 过对称交叉前的逐轴 dps（校正值 / 零偏值） */
+
+    h->imu.corr_flags = 0u;
+    h->imu.corr_valid = 0u;                  /* 先置无效，正常路径最后置 1 */
+
+    tick = h->imu.fresh.drdy_tick;
+    if (s_next_snap == 0u) {                 /* 首帧：对齐 20 ms 边界与 dt 基准 */
+        s_last_tick = tick;
+        s_next_snap = tick + GB_SNAP_TICKS;
+    }
+
+    if (tick < s_last_tick) return V5F_PROC_ERR_TICK;   /* 时间戳回退：本帧不动内部状态 */
+
+    dt        = tick - s_last_tick;
+    is_static = (gate->is_static != 0u) ? 1u : 0u;
+    rb        = 0u;
+
+    /* 静止→运动边沿：按门控给的粒度数回退，并钳位到本段静止已有的粒度数
+     * （否则会回退到上一段运动期间的快照） */
+    if (s_prev_static != 0u && is_static == 0u && s_static_ticks > 0u) {
+        uint32_t back = gate->rollback_granules;
+        if (back > s_static_gran) back = s_static_gran;
+        if (back != 0u) {
+            gb_rollback(back);
+            rb = 1u;
+        }
+    }
+
+    /* 静止：一阶牵引 bias += (raw - bias) · dt/τ；运动：冻结。
+     * τ 分两段：启动段 τ_boot（快收敛），累计静止满 3τ_boot 后切工作段 τ_work
+     * 并锁存 s_boot_done（= bias_ok，四元数的使能门）。 */
+    if (is_static != 0u) {
+        float alpha = (float)dt * ((s_boot_done != 0u) ? GB_ALPHA_WORK_TICK
+                                                       : GB_ALPHA_BOOT_TICK);
+        for (i = 0u; i < 3u; i++) {
+            s_bias[i] += ((float)h->imu.gyro_lsb[i] - s_bias[i]) * alpha;
+        }
+        s_static_ticks += dt;
+        if (s_static_ticks >= GB_BOOT_TICKS) s_boot_done = 1u;
+    }
+
+    /* 20 ms 粒度快照：帧恒定 125 us 到来 => 每 160 帧正好跨过一次边界 */
+    if (tick >= s_next_snap) {
+        gb_snapshot(is_static);
+        s_next_snap += GB_SNAP_TICKS;
+    }
+
+    /* 输出：逐轴标度 -> 对称交叉 -> 校正结果 + 零偏估计 + 有效性标志。
+     * 物理模型 dps_true = K · (LSB / S)，K 对角=1、对称（见 v5f_proc.h 的 V5F_GYRO_K*）。
+     * K 必须放在标度之后：交叉灵敏是"通道 i 混进了通道 j 的角速度"，混的是已换算成
+     * dps 的量。零偏那一路同样过 K，这样"校正后 = 原始 - 零偏"在 K 之后依然成立。 */
+    for (i = 0u; i < 3u; i++) {
+        dv[i] = ((float)h->imu.gyro_lsb[i] - s_bias[i]) / g_v5f_gyro_lsb_per_dps[i];
+        bv[i] = s_bias[i] / g_v5f_gyro_lsb_per_dps[i];
+    }
+    h->imu.gyro_dps[0]      = dv[0] + V5F_GYRO_KXY * dv[1] + V5F_GYRO_KXZ * dv[2];
+    h->imu.gyro_dps[1]      = dv[1] + V5F_GYRO_KXY * dv[0] + V5F_GYRO_KYZ * dv[2];
+    h->imu.gyro_dps[2]      = dv[2] + V5F_GYRO_KXZ * dv[0] + V5F_GYRO_KYZ * dv[1];
+    h->imu.gyro_bias_dps[0] = bv[0] + V5F_GYRO_KXY * bv[1] + V5F_GYRO_KXZ * bv[2];
+    h->imu.gyro_bias_dps[1] = bv[1] + V5F_GYRO_KXY * bv[0] + V5F_GYRO_KYZ * bv[2];
+    h->imu.gyro_bias_dps[2] = bv[2] + V5F_GYRO_KXZ * bv[0] + V5F_GYRO_KYZ * bv[1];
+    h->imu.corr_flags = (rb != 0u) ? V5F_GYRO_CORR_FLAG_ROLLBACK : 0u;
+    h->imu.bias_ok    = s_boot_done;
+    h->imu.corr_valid = 1u;
+    h->imu.bias_evidence_gran = s_evidence_gran;   /* 供处理函数 2 查阈值表 */
+
+    s_last_tick   = tick;
+    s_prev_static = is_static;
+    return V5F_PROC_OK;
+}

@@ -24,13 +24,42 @@ typedef struct {
     uint8_t          flags;      /* 共享区 flags 原样；无 flags 的通道恒 0 */
 } v5f_fresh_t;
 
-/* ---- IMU：ICM-42605（SPI DMA 帧，DMA 中断更新；drdy_tick 来自共享区陀螺通道） ---- */
+/* ---- IMU：ICM-42605（SPI DMA 帧，DMA 中断更新；drdy_tick 来自共享区陀螺通道） ----
+ * 前半段是 DMA 中断解析出的原始量，后半段是处理链（v5f_proc.h）在本帧写回的结果；
+ * 处理链未跑或该帧报错时，结果字段按 v5f_proc.h 的约定置无效（corr_valid=0）。 */
 typedef struct {
     v5f_fresh_t fresh;
     int16_t     gyro_lsb[3];     /* 角速度原始 LSB：16.4 LSB/(°/s)，满量程 ±2000 °/s 对应 ±32768 */
     int16_t     accel_lsb[3];    /* 加速度原始 LSB：8192 LSB/g，满量程 ±4 g 对应 ±32768 */
     float       temp_celsius;    /* 陀螺温度 ℃（132.48 LSB/℃，25 ℃ 零点） */
+
+    /* ↓ 处理结果：陀螺零偏校正（v5f_proc_gyro_bias 写） */
+    float            gyro_dps[3];      /* 零偏校正后角速度 °/s */
+    float            gyro_bias_dps[3]; /* 当前零偏估计 °/s（便于观察/记录，非校正结果本身） */
+    volatile uint8_t corr_valid;       /* 1 = 本帧校正结果有效 */
+    volatile uint8_t bias_ok;          /* 1 = 零偏已收敛可信（累计静止 ≥ 3τ_boot = 6 s，锁存）
+                                        * 处理函数 3 的姿态使能门 */
+    uint8_t          corr_flags;       /* V5F_GYRO_CORR_FLAG_* 位标志 */
+    uint16_t         bias_evidence_gran; /* 累积静止证据（20 ms 粒度数，回退时扣减）
+                                          * 处理函数 2 用它查判静阈值表 */
 } v5f_imu_t;
+
+/* ---- 处理结果：动静判定（v5f_proc_static_detect 写；门控也由它产出） ---- */
+typedef struct {
+    float            level_dps;   /* 判静统计量 max_axis |W 帧滑窗均值|，dps */
+    volatile uint8_t is_static;   /* 1 = 本帧判为静止 */
+    volatile uint8_t valid;       /* 1 = 本帧判定有效（滑窗未满时为 0） */
+    uint8_t          changed;     /* 1 = 本帧发生静止<->运动翻转 */
+    uint8_t          _rsv[3];
+} v5f_static_t;
+
+/* ---- 处理结果：姿态四元数（v5f_proc_attitude 写） ----
+ * 输入是处理函数 1 的补偿输出（零偏 + 逐轴标度系数已载入），本项只做积分。 */
+typedef struct {
+    float            q[4];        /* 机体→导航 旋转：q[0]=w q[1]=x q[2]=y q[3]=z */
+    volatile uint8_t valid;       /* 1 = 本帧四元数有效（上游补偿结果有效时） */
+    uint8_t          _rsv[3];
+} v5f_att_t;
 
 /* ---- IST8310 磁力计（共享区搬运） ---- */
 typedef struct {
@@ -74,6 +103,8 @@ typedef struct {
 /* ---- 保持器总成 ---- */
 typedef struct {
     v5f_imu_t     imu;
+    v5f_static_t  stat;          /* 动静判定结果（处理函数 2） */
+    v5f_att_t     att;           /* 姿态四元数（处理函数 3） */
     v5f_mag_t     mag;
     v5f_baro_t    baro;
     v5f_gps_rmc_t gps_rmc;

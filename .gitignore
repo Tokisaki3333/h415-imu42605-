@@ -79,3 +79,8 @@ __pycache__/
 *.zip
 *.7z
 *.rar
+
+# ------------------------- raw capture / analysis data (not tracked) -------------------------
+serial_runtime_*.txt
+static_*.bin
+*.npy

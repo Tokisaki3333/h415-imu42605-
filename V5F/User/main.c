@@ -38,26 +38,26 @@ int main(void)
 
     printf("[V5F] Ready.\r\n");
 
-    // usbhs_hid_enable();                 /* 内部先禁用 SWJ，再使能 USBHS */
+    usbhs_hid_enable();                 /* 内部先禁用 SWJ，再使能 USBHS */
 
-    uint64_t last_print_tim = GetTime64_Us(), tim = 0;
+    /* 屏显任务停用（与上报无关）：恢复时把这行与下面整块一起去掉注释 */
+    // uint64_t last_print_tim = GetTime64_Us(), tim = 0;
     while (1)
     {
-        // hid_up_enqueue(b, 40);
-        // usbhs_hid_poll();
+        usbhs_hid_poll();               /* 上行环有字节就灌 1 个 EP2 包 */
 
-        tim = GetTime64_Us();
-        if(tim - last_print_tim > 50000)
-        {
-            last_print_tim = tim;
-
-            /* 经纬度是 10^-7 ° 定标整数，按整数打印；HDOP 是 float，拆成整数与小数两位显示 */
-            oled_printf(0, 0, "a%12d", (int)(g_v5f_hold.gps_rmc.lat_e7));
-            oled_printf(0, 16, "o%12d", (int)(g_v5f_hold.gps_rmc.lon_e7));
-            oled_printf(0, 32, "P%02d S%02d H%02d.%02d",
-                        (int)g_v5f_hold.gps_gga.fix_quality, (int)g_v5f_hold.gps_gga.sat_num,
-                        (int)g_v5f_hold.gps_gga.hdop,
-                        (int)(g_v5f_hold.gps_gga.hdop * 100.0f) % 100);
-        }
+        // tim = GetTime64_Us();
+        // if(tim - last_print_tim > 50000)
+        // {
+        //     last_print_tim = tim;
+        //
+        //     /* 经纬度是 10^-7 ° 定标整数，按整数打印；HDOP 是 float，拆成整数与小数两位显示 */
+        //     oled_printf(0, 0, "a%12d", (int)(g_v5f_hold.gps_rmc.lat_e7));
+        //     oled_printf(0, 16, "o%12d", (int)(g_v5f_hold.gps_rmc.lon_e7));
+        //     oled_printf(0, 32, "P%02d S%02d H%02d.%02d",
+        //                 (int)g_v5f_hold.gps_gga.fix_quality, (int)g_v5f_hold.gps_gga.sat_num,
+        //                 (int)g_v5f_hold.gps_gga.hdop,
+        //                 (int)(g_v5f_hold.gps_gga.hdop * 100.0f) % 100);
+        // }
     }
 }

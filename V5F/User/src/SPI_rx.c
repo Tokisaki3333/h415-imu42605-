@@ -3,6 +3,9 @@
 #include "hardware.h"               /* ch32h417.h + debug.h：外设寄存器 / 中断 / Core_ID_V5F */
 #include "spi_hw.h"                 /* SPI1_DMA_Rx_Setup */
 #include "sys_clk.h"                /* GetTime64_Us */
+#include "v5f_proc.h"               /* 处理链：处理函数原型 + 门控类型 */
+#include "usbd_compatibility_hid.h" /* hid_up_enqueue：JustFloat 帧入 CDC 上行环 */
+#include <string.h>                 /* memcpy：float 按字节直拷 */
 
 /* ==================== 内部私有变量 ==================== */
 static volatile uint8_t rxfifo[512];
@@ -12,6 +15,16 @@ static volatile uint32_t s_dma1_irq_max_us = 0;
 
 /* ==================== 数据保持器实例 ==================== */
 volatile v5f_hold_t g_v5f_hold = { 0 };
+
+/* ==================== 处理链门控实例 ====================
+ * 由处理函数 2（动静判定）每帧写入，处理函数 1 下一帧读取；
+ * 初值：按静止、回退 24 格（处理函数 2 第一帧即接管）。 */
+volatile v5f_proc_gate_t g_v5f_proc_gate = { V5F_PROC_GATE_INIT_STATIC, V5F_PROC_ROLLBACK_GRANULES };
+
+/* ==================== 处理链错误码锁存（0 = 未出错） ==================== */
+static volatile uint8_t s_proc_err_gyro_bias = V5F_PROC_OK;
+static volatile uint8_t s_proc_err_static    = V5F_PROC_OK;
+static volatile uint8_t s_proc_err_attitude  = V5F_PROC_OK;
 
 /* ==================== 各共享通道 cnt 快照（变化检测用） ==================== */
 static uint32_t s_last_gyro_cnt = 0, s_last_ist_cnt = 0, s_last_bmp_cnt = 0;
@@ -97,6 +110,32 @@ static void hold_poll(void)
     }
 }
 
+/* ==================== JustFloat 上报帧组装（DMA-RX 内） ====================
+ * 4 路 float(小端 IEEE754) + 4 字节帧尾 00 00 80 7F = 20 字节：
+ *   1~4  姿态四元数 w, x, y, z（机体→导航，右手系，见处理函数 3）
+ * 帧尾是上位机(VOFA+ JustFloat)的切帧标志，必须在；全 float 结构，
+ * 不加包头/长度/校验等任何非 float 字段，否则上位机解析不了。
+ * RISC-V 小端，float 按字节直拷即 IEEE754 小端，无字节序换算。 */
+#define JF_CH_NUM     4u
+#define JF_FRAME_LEN  (JF_CH_NUM * 4u + 4u)      /* 20 */
+
+static void justfloat_report(void)
+{
+    float   ch[JF_CH_NUM];
+    uint8_t buf[JF_FRAME_LEN];
+    uint8_t i;
+
+    for (i = 0u; i < JF_CH_NUM; i++) ch[i] = g_v5f_hold.att.q[i];
+    memcpy(buf, ch, sizeof(ch));
+
+    buf[JF_FRAME_LEN - 4u] = 0x00u;
+    buf[JF_FRAME_LEN - 3u] = 0x00u;
+    buf[JF_FRAME_LEN - 2u] = 0x80u;
+    buf[JF_FRAME_LEN - 1u] = 0x7Fu;
+
+    hid_up_enqueue(buf, JF_FRAME_LEN);   /* 空间不足时整帧丢弃，不会写出半帧 */
+}
+
 /* ==================== DMA 中断服务函数：只负责调度分配 ==================== */
 void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void DMA1_Channel2_IRQHandler(void)
@@ -119,7 +158,23 @@ void DMA1_Channel2_IRQHandler(void)
 
             /* 主任务区开始 */
 
-            ;
+            /* 处理链：依次调用，每个处理函数把结果直接写回 g_v5f_hold；
+             * 返回非 0 只锁存错误码，不打断后续处理函数（结果字段的有效性由各函数自己置）。 */
+            {
+                uint8_t st = v5f_proc_gyro_bias(&g_v5f_hold, &g_v5f_proc_gate);
+                if (st != V5F_PROC_OK) s_proc_err_gyro_bias = st;
+
+                /* 第二步：动静判定 —— 吃本帧的校正输出，写下一帧的门控 */
+                st = v5f_proc_static_detect(&g_v5f_hold, &g_v5f_proc_gate);
+                if (st != V5F_PROC_OK) s_proc_err_static = st;
+
+                /* 第三步：姿态四元数 —— 吃本帧的补偿输出（零偏 + 逐轴标度已载入） */
+                st = v5f_proc_attitude(&g_v5f_hold);
+                if (st != V5F_PROC_OK) s_proc_err_attitude = st;
+            }
+
+            /* 上报：组 1 帧 JustFloat 交给 CDC 上行环，主循环负责灌 EP2 */
+            justfloat_report();
 
             /* 主任务区结束 */
 

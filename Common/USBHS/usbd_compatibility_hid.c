@@ -64,7 +64,7 @@ uint16_t hid_up_avail(void)
  */
 uint8_t hid_up_enqueue(const uint8_t *p, uint16_t len)
 {
-    uint16_t head, tail, first;
+    uint16_t head, first;
 
     if(len == 0) return 1;
 
@@ -73,7 +73,6 @@ uint8_t hid_up_enqueue(const uint8_t *p, uint16_t len)
     if(len > (DEF_UART_BUF_SIZE - 1)) return 0;      /* 请求本身超容量 */
 
     head = hid_WrPtr;
-    tail = hid_RdPtr;
 
     /* 可写字节 = 容量 - (当前在途量) - 1 */
     if((hid_BytesAvail + len) > (DEF_UART_BUF_SIZE - 1)) return 0;
