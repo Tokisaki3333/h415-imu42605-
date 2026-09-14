@@ -115,6 +115,13 @@ static uint8_t  s_bh_fill;
 static uint16_t s_mn_bad;             /* 基线连续打不开的次数（自愈用）*/
 static float    s_mag_dth[3];         /* 自磁力计采样以来的**机体**转动量 rad（补样本陈旧） */
 static uint32_t s_ist_last;
+static float    s_q_ms[4];   /* ★VER=44：磁样本那一帧的 EKF 姿态（地磁观测的旋转基准）*/
+static uint8_t  s_q_ms_ok;
+static float    s_mag_r_prev;   /* 上一周期的磁残差（用于区分毛刺/框架偏置）*/
+static uint8_t  s_mag_r_seed;   /* 首次调用只播种，不判定 */
+static uint8_t  s_mag_spike;
+static uint8_t  s_mag_dp;       /* ★VER=49 机体系死点丢弃计数（诊断）*/
+static float    s_am_err;       /* |a|-1，加计模值偏差 -> 倾角观测的附加方差 */    /* 被判为瞬时跳变而丢弃的计数（诊断）*/
 
 static uint64_t s_last_tick;
 
@@ -144,8 +151,15 @@ static float    s_sig[4];             /* 偏航(度) / 水平位置(m) / 水平速度(m/s) 
  * ------------------------------------------------------------------------- */
 static float wrap_pi(float a)
 {
-    while (a >  EKF_PI) a -= EKF_TWOPI;
-    while (a < -EKF_PI) a += EKF_TWOPI;
+    /* ★VER=47 死循环防护：a = +/-Inf 时 a -/+ TWOPI 仍是 Inf，
+     * 两个 while 永不退出 -> 主循环死在 EKF 里（ISR 照跑、CDC 照出帧、
+     * ekf_q 逐位冻结在对齐那一帧）。
+     * -Ofast 带 -ffinite-math-only，isfinite()/x!=x 会被优化掉，所以用整数计数兜底。 */
+    {
+        uint32_t n = 0u;
+        while (a >  EKF_PI) { a -= EKF_TWOPI; if (++n > 64u) return 0.0f; }
+        while (a < -EKF_PI) { a += EKF_TWOPI; if (++n > 64u) return 0.0f; }
+    }
     return a;
 }
 
@@ -455,7 +469,10 @@ static void ekf_m6_tilt(const volatile v5f_hold_t *h, const volatile v5f_proc_ga
         }
     }
     for (i = 0u; i < 9u; i++) R[i] = 0.0f;
-    R[0] = R[4] = R[8] = V5F_EKF_TILT_SIG_RAD * V5F_EKF_TILT_SIG_RAD;
+    /* ★VER=46 连续加权：线加速度 f_lin 引起的倾角误差约为 |f_lin|/g = |a|-1 (rad)，
+     * 把它作为附加方差并入 R，于是"加计可不可信"变成权重大小而不是开/关门，
+     * 运动期间倾角仍然被持续牵引（原硬门在 |gyro|>TILT_LEV_DPS 时 0% 开 -> XY 漂）。*/
+    R[0] = R[4] = R[8] = V5F_EKF_TILT_SIG_RAD * V5F_EKF_TILT_SIG_RAD + s_am_err * s_am_err;
     {
         /* ★ 单周期姿态修正上限（= 重力环的 tau 下限，约 8 s）。
          *   没有它，R=(0.5 度)^2 配 349 Hz 满增益更新，闭环带宽约 100 Hz，
@@ -465,7 +482,12 @@ static void ekf_m6_tilt(const volatile v5f_hold_t *h, const volatile v5f_proc_ga
         float q_before[4];
         uint32_t n;
         for (n = 0u; n < 4u; n++) q_before[n] = s_x[IX_Q + n];
-        st = ekf_update(R, 3u, r, V5F_EKF_NIS_MAX_3, &s_nis[3], &s_rej[0], 0x7FC0u, V5F_EKF_TILT_K_MAX);
+        st = /* ★VER=48 掩码 0x7FC0 -> 0x7EC0：去掉 bit8(偏航)。
+             * 重力方向不含任何偏航信息，让它去动偏航物理上就是错的；
+             * VER=46 把 tilt 门从 0% 打开到 99.8% 后，它成了新的强偏航激励源
+             * （k_cap 0.010 / 349 Hz -> tau 0.29 s），把已经被地磁牵到磁北的偏航
+             * 反复打飞 125~164 度（实测 dyaw 双峰）。 */
+        st = ekf_update(R, 3u, r, V5F_EKF_NIS_MAX_3, &s_nis[3], &s_rej[0], 0x7EC0u, V5F_EKF_TILT_K_MAX);
         {
             float qc[4], dq[4], ang, cap = V5F_EKF_TILT_STEP_MAX_DEG * DEG2RAD;
             qc[0] = q_before[0]; qc[1] = -q_before[1];
@@ -569,33 +591,39 @@ static void ekf_m3_baro(const volatile v5f_proc_gate_t *gate)
 /* M7 磁偏航（1 维，只挂第 8 项） */
 static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gate)
 {
-    float R[1], r[1], Rt[3][3], Bn[3], mf[3], hh;
+    float R[1], r[1], Rt[3][3], Bn[3], mf[3], hh, fhb2;
     uint8_t st;
     uint32_t i;
 
     if (!V5F_EKF_YAW_OBS_EN || !gate->ekf_mag_yaw) return;
     for (i = 0u; i < 3u; i++) mf[i] = h->mag.f[i];
-    /* 补样本陈旧：IST 约 187 Hz，2229 dps 下一个样本最多陈旧 63 度。
-     * v(t) = Exp(-dth) v(t_s)，dth = 自采样以来的**机体**转动量。 */
-    {
-        float am = sqrtf(s_mag_dth[0]*s_mag_dth[0] + s_mag_dth[1]*s_mag_dth[1]
-                       + s_mag_dth[2]*s_mag_dth[2]);
-        if (am > 1e-4f) {
-            float half = 0.5f * am;
-            float s = sinf(half) / am;
-            float dq[4];
-            dq[0] = cosf(half);
-            dq[1] = -s * s_mag_dth[0];
-            dq[2] = -s * s_mag_dth[1];
-            dq[3] = -s * s_mag_dth[2];
-            {
-                float tmp[3];
-                q_rot_vec(dq, mf, tmp);
-                mf[0] = tmp[0]; mf[1] = tmp[1]; mf[2] = tmp[2];
-            }
-        }
+    /* ★VER=49 真正的死点门：**机体系**水平分量。
+     * yaw 所绕的轴 = 机体 z；它与磁场方向重合时 f_x,f_y -> 0，
+     * yaw 信息量 ~ fhb -> 0 而误差 ~ sigma_B/fhb -> 发散，于是数据疯转。
+     * 旧门用的是导航系 bh2（恒 0.436~0.470，从未触发），在死点上完全瞎。*/
+    fhb2 = h->mag.f[0]*h->mag.f[0] + h->mag.f[1]*h->mag.f[1];
+    if (fhb2 < V5F_EKF_MAG_BHB_MIN * V5F_EKF_MAG_BHB_MIN) {
+        s_mag_r_seed = 0u;          /* 死点期间不许 latch 框架偏置 */
+        if (s_mag_dp < 250u) s_mag_dp++;
+        if (s_rej[3] < 250u) s_rej[3]++;
+        s_gate_bits |= V5F_EKF_GB_CHI2;
+        return;
     }
-    q_to_R(&s_x[IX_Q], Rt);
+    /* ★VER=44 地磁观测的姿态基准 = **磁样本那一帧**的姿态（q_s），不是当前姿态。
+     * 旧的写法是「s_mag_dth 自积分 -> Exp(-dth) 转 f -> 再乘 R(q_now)」，
+     * 而这两步在数学上恒等于 R(q_s) f_s（q_now 精确抵消）：
+     *     Bn = R(q_now) R(q_now)^T R(q_s) f_s = R(q_s) f_s
+     * 旧写法的错误不在抵消，而在 **s_mag_dth 是"轴角相加"而不是"旋转复合"**：
+     * 连续快转时样本陈旧可达 60~190 度（187 Hz / 2000+ dps），此时两者方向完全不同，
+     * 于是把 f 转到错方向 -> 方位角错 60 度（实测 mag_r p90 59.9 / max 72.0）
+     * -> 偏航被拖走 54 度（实测残差 +0.001 -> +54.451）。VER=38 修过姿态增量的同一类错，
+     * 这里漏了。现在直接用 q_s，既精确又不再需要任何积分。
+     * 注：s_mag_dth 自 VER=44 起仅作残留诊断，**不要再用于补偿**。 */
+    if (s_q_ms_ok) {
+        q_to_R(s_q_ms, Rt);
+    } else {
+        q_to_R(&s_x[IX_Q], Rt);
+    }
     rot_bn(Rt, mf, Bn);                    /* B = R(q) f -> 导航系地磁方向 */
     hh = atan2f(Bn[0], Bn[1]);             /* 地磁水平分量方位（东/北），应恒等于 D */
     /* ★ 完整的雅可比：h = atan2(Bx, By)，B = R(q)f，dth 为导航系姿态误差
@@ -626,7 +654,12 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
          * 用它修倾角会把 10 度系统误差灌进姿态（VER=34 实测偏航偏 151 度，
          * 而 bg 只有 0.005 dps，说明不是零偏在驱动）。 */
         s_H[0][8] = -1.0f;
-        R[0] = V5F_EKF_MAG_SIG_RAD * V5F_EKF_MAG_SIG_RAD;
+        /* ★VER=49 死点连续加权：方位角误差 ~ sigma_B/fhb，
+         * fhb 越小地磁对 yaw 的权限越小（而不是突然开/关）。*/
+        {
+            float sr2 = V5F_EKF_MAG_FERR / sqrtf(fhb2);
+            R[0] = V5F_EKF_MAG_SIG_RAD * V5F_EKF_MAG_SIG_RAD + sr2 * sr2;
+        }
     }
     r[0] = wrap_pi(V5F_MAG_DECL_RAD - hh);
     /* ★ 硬新息门（物理约束，不是调参）：|r| 超过 45 度就整帧丢弃。
@@ -635,13 +668,30 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
      *   模长门抓不住（坏样本模长仍约 1），软 chi2 也抓不住（整流项抬高 P 使 S 变大）。
      *   用硬门 + 增益上限；不再用"限幅状态"那种做法（只回滚状态不回滚 P，
      *   会把闪现变成每周期 17 度/s 的恒速漂移）。 */
-    if (fabsf(r[0]) > V5F_EKF_MAG_R_MAX_DEG * DEG2RAD) {
-        if (s_rej[3] < 250u) s_rej[3]++;
-        s_gate_bits |= V5F_EKF_GB_CHI2;
-    } else {
-        st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
-                        0x0100u, V5F_EKF_MAG_K_MAX);
-        if (st == 0u) s_gate_bits |= V5F_EKF_GB_MAG;
+    s_mag_r = r[0] * RAD2DEG;
+    /* ★VER=45 大新息必须按**性质**分开，否则偏航永远牵不到磁北：
+     *   瞬时跳变（坏样本）：与上一周期残差差异巨大 -> 丢；
+     *   持续大残差（框架偏置）：偏航与磁北差一个常量角 -> **必须积分掉**。
+     * 实测 VER=44：r 长期 160~172 度、chi2_rej 置位 100%、mag_used 恒 0，
+     * 就是被原来那道 45 度绝对门永久锁死 —— 表现为"看着在牵引、却牵不到磁北"
+     * （只剩陀螺自由漂移 + 旧链地磁环给的相对阻尼）。
+     * 接受框架偏置后单步仍由 MAG_K_MAX 限幅，几十个周期收敛；
+     * 收敛中 r 每周期只变 K*|r| << SPIKE，不会被自己重新判成毛刺。 */
+    {
+        float dr;
+        if (!s_mag_r_seed) { s_mag_r_seed = 1u; s_mag_r_prev = r[0]; }
+        dr = fabsf(wrap_pi(r[0] - s_mag_r_prev));
+        s_mag_r_prev = r[0];
+        if (fabsf(r[0]) > V5F_EKF_MAG_R_MAX_DEG * DEG2RAD &&
+            dr > V5F_EKF_MAG_SPIKE_DEG * DEG2RAD) {
+            if (s_mag_spike < 250u) s_mag_spike++;
+            if (s_rej[3] < 250u) s_rej[3]++;
+            s_gate_bits |= V5F_EKF_GB_CHI2;
+        } else {
+            st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
+                            0x0100u, V5F_EKF_MAG_K_MAX);
+            if (st == 0u) { s_gate_bits |= V5F_EKF_GB_MAG; s_mag_used = 1u; }
+        }
     }
 }
 
@@ -1054,6 +1104,9 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             uint32_t nq;
             s_ist_last = ic;
             s_mag_dth[0] = 0.0f; s_mag_dth[1] = 0.0f; s_mag_dth[2] = 0.0f;
+            /* ★VER=44：记下磁样本这一帧的姿态，地磁观测用它把 f 转到导航系 */
+            for (nq = 0u; nq < 4u; nq++) s_q_ms[nq] = s_x[IX_Q + nq];
+            s_q_ms_ok = 1u;
         }
     }
     for (i = 0u; i < 3u; i++) {
@@ -1296,8 +1349,11 @@ uint8_t v5f_proc_ekf_gate(volatile v5f_hold_t *h, volatile v5f_proc_gate_t *gate
          *   16 ms 窗抓的正是它；慢转时 a_c 可忽略，不该因此关掉倾斜观测。
          *   独立字段：与 gate->att_tilt 同源判据但各自成位，改一个不动另一个。 */
         gate->ekf_tilt = (uint8_t)(!sat && h->imu.acc_valid
-                        && (fabsf(am2 - 1.0f) < V5F_EKF_TILT_AMAG_TOL)
-                        && ((h->stat.level_dps < V5F_EKF_TILT_LEV_DPS) || h->stat.ac_bypass));
+                        && (fabsf(am2 - 1.0f) < V5F_EKF_TILT_AMAG_CAP));
+        /* |a|-1 交给 R 连续加权（见 ekf_m6_tilt / s_am_err），此处只挡撞击类异常。
+         * 原第三条 level_dps < TILT_LEV_DPS 已删：匀速转动不破坏重力测量，
+         * 实测慢转 |a|-1 仅 2.8% 而门 0% 开 -> 运动期倾角只有陀螺积分 -> XY 飘。 */
+        s_am_err = fabsf(am2 - 1.0f);
     }
     /* ★ 门用 mag.ok（只查 |y| 模长一致性 = 外部磁干扰），**不用** mag.trust。
      *   trust 里那个 |a_lin| < 0.05 g 是给旧链加的：旧链的 Bw/psi_true 由旧链姿态算出，

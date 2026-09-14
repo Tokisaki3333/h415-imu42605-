@@ -95,7 +95,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        43u
+#define V5F_FW_VER        49u
 #define V5F_EKF_EN        1u      /* 阶段 1（S1）已落地：16 维 ESKF 影子模式 */
 #define V5F_DET_AC_EN     1u
 /* GSV 轮次间隔常量在 Common/Common/GPS.c 内定义：那个文件由 V3F 编译，看不到本头。 */
@@ -590,6 +590,10 @@
                                           * ★ 用独立常量，不借 V5F_DET_AC_E_ON：
                                           *   一环一门，改一个不许动另一个。 */
 #define V5F_EKF_TILT_AMAG_TOL    0.06f             /* |a|^2 偏离 1，约等于 |a| 偏离 3% */
+/* ★VER=46 倾角(重力)观测的模值**上限**保护：|a|-1 超过本值才丢弃样本。
+ * 它只是剔除撞击类异常，不是"信任门"——加计的可信度由 R 连续加权表达
+ * （R += (|a|-1)^2）。原 TOL(0.05/0.03 量级) 在慢转 |a|-1=2.8% 时把门关死。0.35。 */
+#define V5F_EKF_TILT_AMAG_CAP     0.35f
 #define V5F_EKF_TILT_LEV_DPS     2.0f
 #define V5F_EKF_BARO_WARMUP_S    5.0f
 #define V5F_EKF_BARO_PERIOD_S    0.164f
@@ -639,6 +643,11 @@
  * + 整流项抬高 P[8][8] 使 S 变大 -> 软 chi2 不降权 -> K 约等于 1 -> 整体 snap。
  * 2.87 ms 转 169 度 = 59000 度/s，物理上不可能。 */
 #define V5F_EKF_MAG_R_MAX_DEG    45.0f   /* 磁偏航硬新息门：|r| 超它整帧丢弃 */
+/* ★VER=45 地磁"瞬时跳变"判据：仅当 |r|>MAG_R_MAX_DEG 且与上一周期残差
+ * 之差超过本值时，才判为坏样本丢弃。持续的框架偏置（大而稳定）不丢，
+ * 否则偏航永远无法被牵引到磁北（VER=44 实测：r 长期 165 度、硬门每周期
+ * 都在拒、mag_used 恒 0）。20 度。 */
+#define V5F_EKF_MAG_SPIKE_DEG     20.0f
 #define V5F_EKF_MAG_K_MAX        0.05f   /* 磁偏航增益上限 = tau 约 0.057 s 的牵引（按 349 Hz 算）。
  * ★ 分工：**硬门**负责挡无效样本（|r|<=45 度、Bh/|B|>=0.30），
  *   **增益**只负责系统带宽。上一版把它压到 0.002（tau 1.4 s）再叠加 mag 门
@@ -651,6 +660,15 @@
  * H 的倾角列放大到无穷 —— 实测单周期跳到 169 度就是这么来的。
  * ★ 原来那个 if (bh2 > 1e-6f) 形同虚设：Bh = 0.001 时条件数已经放大 1000 倍。 */
 #define V5F_EKF_MAG_BH_MIN       0.30f  /* 磁偏航增益上限（tau 约 1.4 s 的牵引）*/
+/* ★VER=49 死点门（**机体系**，不是导航系）。
+ * yaw 所绕的轴 = 机体 z；它与磁场方向重合时，
+ * fhb = hypot(f_x,f_y) -> 0，yaw 信息量趋零而误差发散 -> 数据疯转。
+ * 导航系 bh 在这个姿态下反而很大（实测恒 0.44~0.47），所以旧门形同虚设。
+ * 平板水平时 fhb = cos(磁倾角) 约 0.47；0.15 约对应磁场对机体 z 的偏离 8.6 度。 */
+#define V5F_EKF_MAG_BHB_MIN      0.15f
+/* ★VER=49 地磁场模型误差（单位矢量量级），用于死点连续加权：
+ * R_mag += (FERR/fhb)^2。fhb=0.45 时附加约 1.3 度；fhb=0.15 时约 3.8 度。 */
+#define V5F_EKF_MAG_FERR         0.010f
 #define V5F_EKF_TILT_K_MAX       0.010f  /* 重力增益上限（比磁快，它是强观测）*/
 /* 磁偏航环的**单周期修正上限**（度）。等价于给地磁牵引一个 τ 下限：
  *   tau_min = dt_e / (STEP*DEG2RAD) = 2.87ms / (0.05*0.01745) = 3.3 s
