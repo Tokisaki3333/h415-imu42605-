@@ -149,3 +149,112 @@ void hid_up_flush(void)
 {
     _hid_ep_send_one();
 }
+
+/******************************************************************************
+
+ *                       下行：主机 → 设备
+
+ ******************************************************************************/
+
+#define DEF_DOWN_MASK  (DEF_DOWN_BUF_SIZE - 1u)
+
+static uint8_t           s_down_buf[DEF_DOWN_BUF_SIZE];
+static volatile uint16_t s_down_w = 0;
+static volatile uint16_t s_down_r = 0;
+static volatile uint16_t s_down_avail = 0;
+
+volatile float    g_cmd_echo = 0.0f;
+volatile uint16_t g_cmd_cnt  = 0u;
+volatile uint8_t  g_cmd_last = 0u;
+
+/* 中断里调用：整包入环，放不下就整段放弃 */
+void hid_down_push(const uint8_t *p, uint16_t len)
+{
+    uint16_t first;
+
+    if (len == 0u || len > (DEF_DOWN_BUF_SIZE - 1u)) return;
+    if ((uint16_t)(s_down_avail + len) > (DEF_DOWN_BUF_SIZE - 1u)) return;
+
+    first = (uint16_t)(DEF_DOWN_BUF_SIZE - s_down_w);
+    if (len > first)
+    {
+        memcpy(s_down_buf + s_down_w, p, first);
+        memcpy(s_down_buf, p + first, (uint16_t)(len - first));
+    }
+    else
+    {
+        memcpy(s_down_buf + s_down_w, p, len);
+    }
+    s_down_w = (uint16_t)((s_down_w + len) & DEF_DOWN_MASK);
+    s_down_avail = (uint16_t)(s_down_avail + len);
+}
+
+/* 执行一条命令（len = 命令字节数） */
+static void hid_cmd_exec(const uint8_t *p, uint16_t len)
+{
+    float f;
+
+    switch (p[0])
+    {
+    case 'T':                                   /* 测试：写专用字段，原样回显 */
+        if (len < 5u) return;
+        memcpy(&f, p + 1u, 4u);
+        g_cmd_echo = f;
+        break;
+    case 'P':                                   /* 设参数 id = 值（S2 接 J 组） */
+        if (len < 6u) return;
+        break;
+    case 'G':                                   /* 读回参数 */
+        if (len < 2u) return;
+        break;
+    case 'M':                                   /* M1~M7 使能位图 */
+        if (len < 2u) return;
+        break;
+    case 'A':                                   /* 强制重新对齐 */
+        break;
+    default:
+        return;                                 /* 未知命令：不计入、不改变状态 */
+    }
+    g_cmd_last = p[0];
+    if (g_cmd_cnt < 0xFFFFu) g_cmd_cnt++;
+}
+
+/* 主循环调用：从下行环取字节，按 A5 5A | len | 命令 | 5A A5 解析 */
+void hid_cmd_poll(void)
+{
+    static uint8_t  st = 0u;
+    static uint8_t  lenlo = 0u, lenhi = 0u;
+    static uint8_t  cbuf[64];
+    static uint16_t need = 0u, got = 0u;
+    uint8_t b;
+
+    while (s_down_avail > 0u)
+    {
+        b = s_down_buf[s_down_r];
+        s_down_r = (uint16_t)((s_down_r + 1u) & DEF_DOWN_MASK);
+        s_down_avail--;
+
+        switch (st)
+        {
+        case 0u: if (b == 0xA5u) st = 1u; break;
+        case 1u: st = (b == 0x5Au) ? 2u : ((b == 0xA5u) ? 1u : 0u); break;
+        case 2u: lenlo = b; st = 3u; break;
+        case 3u:
+            lenhi = b;
+            need = (uint16_t)(lenlo | ((uint16_t)lenhi << 8));
+            if (need == 0u || need > (uint16_t)sizeof(cbuf)) { st = 0u; break; }
+            got = 0u; st = 4u;
+            break;
+        case 4u:
+            cbuf[got++] = b;
+            if (got >= need) st = 5u;
+            break;
+        case 5u: st = (b == 0x5Au) ? 6u : 0u; break;
+        case 6u:
+            if (b == 0xA5u) hid_cmd_exec(cbuf, need);
+            st = 0u;
+            break;
+        default: st = 0u; break;
+        }
+    }
+}

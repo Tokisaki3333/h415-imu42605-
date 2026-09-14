@@ -11,6 +11,14 @@
 #define GNRMC_HEADER_CS ('G' ^ 'N' ^ 'R' ^ 'M' ^ 'C' ^ ',')
 #define GNGGA_HEADER_CS ('G' ^ 'N' ^ 'G' ^ 'G' ^ 'A' ^ ',')
 #define GNGSA_HEADER_CS ('G' ^ 'N' ^ 'G' ^ 'S' ^ 'A' ^ ',')
+/* GSV 各 talker 变体（GN 组合 + 各星座单独发；它们共用同一个解析器与 CmdId） */
+#define GNGSV_HEADER_CS (0x67u)   /* GNGSV */
+#define GPGSV_HEADER_CS (0x79u)   /* GPGSV */
+#define BDGSV_HEADER_CS (0x68u)   /* BDGSV */
+#define GLGSV_HEADER_CS (0x65u)   /* GLGSV */
+#define GAGSV_HEADER_CS (0x68u)   /* GAGSV */
+#define GQGSV_HEADER_CS (0x78u)   /* GQGSV */
+#define GIGSV_HEADER_CS (0x60u)   /* GIGSV */
 
 #define GPS_FIELDS_MAX 24
 
@@ -21,7 +29,8 @@ typedef enum {
     CMD_NONE = 0,
     CMD_RMC,
     CMD_GGA,
-    CMD_GSA
+    CMD_GSA,
+    CMD_GSV
 } CmdId;
 
 /* ================= 第二级：通用增量解析状态 =================
@@ -36,23 +45,38 @@ typedef struct {
     uint8_t  flen[GPS_FIELDS_MAX]; /* 各字段长度 */
 } GpsParser;
 
-static GpsParser rmc_p, gga_p, gsa_p;
+static GpsParser rmc_p, gga_p, gsa_p, gsv_p;
 
 typedef struct {
     const char *name;          /* 命令名（5 字符） */
     uint8_t     cs_init;       /* 命令头校验和初值 */
     GpsParser  *p;
+    CmdId       cmd;           /* ★ 该表项归属的命令。同一条命令可有多个
+                                * talker 变体（GSV 就是），不能用"表下标+1"推。 */
 } CmdDef;
 
 static const CmdDef cmd_table[] = {
-    { "GNRMC", GNRMC_HEADER_CS, &rmc_p },
-    { "GNGGA", GNGGA_HEADER_CS, &gga_p },
-    { "GNGSA", GNGSA_HEADER_CS, &gsa_p },
+    { "GNRMC", GNRMC_HEADER_CS, &rmc_p, CMD_RMC },
+    { "GNGGA", GNGGA_HEADER_CS, &gga_p, CMD_GGA },
+    { "GNGSA", GNGSA_HEADER_CS, &gsa_p, CMD_GSA },
+    /* GSV 各 talker 变体（GN 组合 + 各星座单独发），共用一个解析器与 CmdId */
+    { "GNGSV", GNGSV_HEADER_CS, &gsv_p, CMD_GSV },
+    { "GPGSV", GPGSV_HEADER_CS, &gsv_p, CMD_GSV },
+    { "BDGSV", BDGSV_HEADER_CS, &gsv_p, CMD_GSV },
+    { "GLGSV", GLGSV_HEADER_CS, &gsv_p, CMD_GSV },
+    { "GAGSV", GAGSV_HEADER_CS, &gsv_p, CMD_GSV },
+    { "GQGSV", GQGSV_HEADER_CS, &gsv_p, CMD_GSV },
+    { "GIGSV", GIGSV_HEADER_CS, &gsv_p, CMD_GSV },
 };
 #define CMD_COUNT (sizeof(cmd_table) / sizeof(cmd_table[0]))
 
+/* ★ CmdId -> 解析器。续读路径用它取解析器，不再假设"表下标 == CmdId-1"
+ *   （那个假设在一个命令有多个 talker 变体时就不成立）。 */
+static GpsParser *const cmd_parser[] = { NULL, &rmc_p, &gga_p, &gsa_p, &gsv_p };
+
 static CmdId    gps_cmd = CMD_NONE;   /* 当前活跃语句的命令（NONE=空闲） */
 static uint64_t gps_clk  = 0;         /* 当前语句到达时间戳（跨段沿用首次识别时刻） */
+static uint8_t  gps_talk = 0;         /* 当前 GSV 的 talker 序号 0..6 */
 
 /* 将十六进制字符转换为数值 */
 static uint8_t hex2val(char c)
@@ -134,6 +158,12 @@ static float knots_to_mps(const char *s)
     return (float)parse_fixed(s, 3) * 1e-3f * 0.51444444f;
 }
 
+/* "x.yy" 度 → 度（float）：RMC 的 course 与 magnetic variation 都是这个格式 */
+static float deg_from_nmea(const char *s)
+{
+    return (float)parse_fixed(s, 2) * 1e-2f;
+}
+
 /* RMC 通道发布：先清本通道字段（本帧缺失显式空），再填，最后 ts + cnt++ */
 static void gps_publish_rmc(void)
 {
@@ -142,6 +172,7 @@ static void gps_publish_rmc(void)
     g_shm->gps_rmc.flags = 0;
     g_shm->gps_rmc.status = 0;      g_shm->gps_rmc.lat_e7 = 0; g_shm->gps_rmc.lon_e7 = 0;
     g_shm->gps_rmc.speed_mps = 0;   g_shm->gps_rmc.date_ddmmyy = 0;
+    g_shm->gps_rmc.course_deg = 0;  g_shm->gps_rmc.magvar_deg = 0;
 
     if (rmc_p.flen[2] > 0) {
         g_shm->gps_rmc.flags |= SHM_RMC_STATUS;
@@ -163,10 +194,30 @@ static void gps_publish_rmc(void)
         g_shm->gps_rmc.flags |= SHM_RMC_SPEED;
         g_shm->gps_rmc.speed_mps = knots_to_mps(t);
     }
+    /* 字段 8：对地航向（真北，0~360 度）。
+     * ★ EKF 靠它 + speed_mps 才能组成速度矢量（北/东分量）；
+     * 只有 speed_mps 标量时，速度只能约束一个方向。 */
+    if (rmc_p.flen[8] > 0) {
+        field_copy(t, sizeof t, rmc_p.fabs[8], rmc_p.flen[8]);
+        g_shm->gps_rmc.flags |= SHM_RMC_COURSE;
+        g_shm->gps_rmc.course_deg = deg_from_nmea(t);
+    }
     if (rmc_p.flen[9] > 0) {
         field_copy(t, sizeof t, rmc_p.fabs[9], rmc_p.flen[9]);
         g_shm->gps_rmc.flags |= SHM_RMC_DATE;
         g_shm->gps_rmc.date_ddmmyy = (uint32_t)parse_fixed(t, 0);
+    }
+    /* 字段 10/11：接收机自报的磁偏角（东正西负）。
+     * ★ 这是接收机**内部 WMM** 算出来的，可以和我们离线查的 WMM 值互相校验
+     * （本机离线值 -7.53 度）。注意别和 course 混：
+     * course 是航向（相对真北），magvar 是磁北相对真北的偏角。 */
+    if (rmc_p.flen[10] > 0) {
+        float mv;
+        field_copy(t, sizeof t, rmc_p.fabs[10], rmc_p.flen[10]);
+        mv = deg_from_nmea(t);
+        if (rmc_p.flen[11] > 0 && buf_at(rmc_p.fabs[11]) == 'W') mv = -mv;
+        g_shm->gps_rmc.flags |= SHM_RMC_MAGVAR;
+        g_shm->gps_rmc.magvar_deg = mv;
     }
     shm_chan_ts_write(&g_shm->gps_rmc.hdr, gps_clk);
     g_shm->gps_rmc.hdr.cnt++;
@@ -220,6 +271,122 @@ static void gps_publish_gsa(void)
     g_shm->gps_gsa.hdr.cnt++;
 }
 
+/* GSV 累加器：一个轮次通常有 2~3 条消息，每条 4 颗星，只在最后一条发布 */
+
+/* ---- GSV：按 talker 累积（7 个变体各存"最近一轮"）----
+ * ★ 不能按时间窗聚合：GSV 跟着定位节拍走（$PCAS02,100 => 10 Hz），一个轮次里 7 个
+ *   talker 的报文都落在同一个 100 ms 窗口内，相邻报文间隔只有几毫秒 —— 任何
+ *   "间隔 > 阈值才算一轮"的条件都不成立，flush 永不执行（实测 gsv_cnt 恒 0）。
+ *   改为结构性判定：msg==1 开一轮，msg==tot 提交该 talker 的一轮；
+ *   每提交一次就把所有 talker 的最近一轮**求和**发布，不依赖任何时间阈值。
+ * ★ 视野星数（字段 3）只在 msg==1 时取 —— 同一 talker 的多条消息里它是同一个数，
+ *   每条都加会重复计数。按 talker 求和才是全天空总数。
+ * ★ 某 talker 最近一轮超过 GSV_STALE_TICKS 没更新就从合计里剔除（防残留旧值）。 */
+#define GSV_NTALK        7u              /* 与 cmd_table 里 GSV 的 talker 变体数一致 */
+#define GSV_STALE_TICKS  2000000000ULL   /* 2 s（10 ns 计数） */
+
+typedef struct {
+    uint16_t sum;      /* 本轮：C/N0 之和 */
+    uint8_t  view;     /* 本轮：视野星数 */
+    uint8_t  n;        /* 本轮：有效 C/N0 星数 */
+    uint8_t  min;      /* 本轮：最弱星 */
+    uint8_t  have;     /* 本轮已有数据 */
+    uint16_t v_sum;    /* 最近完成的一轮 */
+    uint8_t  v_view;
+    uint8_t  v_n;
+    uint8_t  v_min;
+    uint8_t  v_ok;
+    uint64_t v_clk;    /* 最近完成一轮的时刻 */
+} gsv_talk_t;
+
+static gsv_talk_t s_gsv[GSV_NTALK];
+
+/* 把所有 talker 的最近一轮求和后写进共享区 */
+static void gps_gsv_publish(void)
+{
+    uint32_t vsum = 0u;
+    uint16_t vview = 0u, vn = 0u, vmin = 0u, ntk = 0u;
+    uint8_t  i;
+
+    for (i = 0u; i < GSV_NTALK; i++) {
+        if (s_gsv[i].v_ok == 0u) continue;
+        if ((gps_clk - s_gsv[i].v_clk) > GSV_STALE_TICKS) {
+            s_gsv[i].v_ok = 0u;              /* 过期：剔除 */
+            continue;
+        }
+        vview += s_gsv[i].v_view;
+        vsum  += s_gsv[i].v_sum;
+        vn    += s_gsv[i].v_n;
+        if (s_gsv[i].v_n > 0u && (vmin == 0u || s_gsv[i].v_min < vmin)) {
+            vmin = s_gsv[i].v_min;
+        }
+        ntk++;
+    }
+    if (vview > 255u) vview = 255u;
+    if (vn > 255u) vn = 255u;
+
+    g_shm->gps_gsv.flags       = 0u;
+    g_shm->gps_gsv.sats_view   = (uint8_t)vview;
+    g_shm->gps_gsv.talkers     = (uint8_t)ntk;
+    g_shm->gps_gsv.snr_n       = (uint8_t)vn;
+    g_shm->gps_gsv.snr_min     = (uint8_t)vmin;
+    g_shm->gps_gsv.snr_avg_x10 = (vn > 0u)
+                               ? (uint16_t)(vsum * 10u / (uint32_t)vn) : 0u;
+    g_shm->gps_gsv.flags      |= SHM_GSV_SNR;
+    shm_chan_ts_write(&g_shm->gps_gsv.hdr, gps_clk);
+    g_shm->gps_gsv.hdr.cnt++;
+}
+
+static void gps_publish_gsv(void)
+{
+    char        t[16];
+    uint8_t     msg = 0u, tot = 0u, k, tk = gps_talk;
+    gsv_talk_t *s;
+
+    if (tk >= GSV_NTALK) return;
+    s = &s_gsv[tk];
+
+    if (gsv_p.flen[2] > 0u) {
+        field_copy(t, sizeof t, gsv_p.fabs[2], gsv_p.flen[2]);
+        msg = (uint8_t)parse_fixed(t, 0);
+    }
+    if (msg == 1u) {                        /* 该 talker 新一轮 */
+        s->sum = 0u; s->n = 0u; s->min = 0u; s->view = 0u;
+        if (gsv_p.flen[3] > 0u) {
+            field_copy(t, sizeof t, gsv_p.fabs[3], gsv_p.flen[3]);
+            s->view = (uint8_t)parse_fixed(t, 0);
+        }
+        s->have = 1u;
+    }
+    if (s->have == 0u) return;
+
+    for (k = 0u; k < 4u; k++) {             /* SNR 在字段 7/11/15/19 */
+        uint8_t fi = (uint8_t)(7u + 4u * k);
+        uint8_t v;
+        if (fi >= GPS_FIELDS_MAX || gsv_p.flen[fi] == 0u) continue;
+        field_copy(t, sizeof t, gsv_p.fabs[fi], gsv_p.flen[fi]);
+        v = (uint8_t)parse_fixed(t, 0);
+        if (v == 0u) continue;
+        s->sum = (uint16_t)(s->sum + v);
+        s->n++;
+        if (s->min == 0u || v < s->min) s->min = v;
+    }
+
+    if (gsv_p.flen[1] > 0u) {
+        field_copy(t, sizeof t, gsv_p.fabs[1], gsv_p.flen[1]);
+        tot = (uint8_t)parse_fixed(t, 0);
+    }
+    if (tot != 0u && msg == tot) {          /* 该 talker 一轮结束：提交 */
+        s->v_sum = s->sum;  s->v_view = s->view;
+        s->v_n   = s->n;    s->v_min  = s->min;
+        s->v_ok  = 1u;      s->v_clk  = gps_clk;
+        s->have  = 0u;
+    }
+    /* 每条 GSV 都发布：这样 gsv_cnt 的节律 == GSV 报文的到达率，可直接读出
+     * "接收机到底有没有发 GSV"，不必再靠推断。talkers 仍只统计已完成轮次的 talker。 */
+    gps_gsv_publish();
+}
+
 /* 按当前活跃命令发布对应语句帧 */
 static void gps_publish_frame(void)
 {
@@ -227,6 +394,7 @@ static void gps_publish_frame(void)
         case CMD_RMC: gps_publish_rmc(); break;
         case CMD_GGA: gps_publish_gga(); break;
         case CMD_GSA: gps_publish_gsa(); break;
+        case CMD_GSV: gps_publish_gsv(); break;
         default: break;
     }
 }
@@ -329,7 +497,7 @@ void parse_gps_data(uint8_t *data, uint32_t len, uint32_t abs_base, uint64_t clk
 
     /* 上一条语句跨段未读完：整段交给对应第二级续读，读完再从剩余处继续 */
     if (gps_cmd != CMD_NONE) {
-        uint32_t n = parse_body(data, len, abs_base, cmd_table[gps_cmd - 1].p);
+        uint32_t n = parse_body(data, len, abs_base, cmd_parser[gps_cmd]);
         if (gps_cmd != CMD_NONE) return;
         pos = n;
     }
@@ -351,7 +519,10 @@ void parse_gps_data(uint8_t *data, uint32_t len, uint32_t abs_base, uint64_t clk
                     if (hdr_len == 5) {
                         for (uint8_t i = 0; i < CMD_COUNT; i++) {
                             if (memcmp(hdr, cmd_table[i].name, 5) == 0) {
-                                gps_cmd = (CmdId)(i + 1);
+                                gps_cmd = cmd_table[i].cmd;
+                                /* GSV 有 7 个 talker 变体（表下标 3~9），必须把序号带下去，
+                                 * 否则 7 个 talker 的统计会混在一起。 */
+                                gps_talk = (gps_cmd == CMD_GSV) ? (uint8_t)(i - 3u) : 0u;
                                 gps_clk = clk;
                                 parser_reset(cmd_table[i].p, cmd_table[i].cs_init,
                                              abs_base + pos + 1);
@@ -450,13 +621,40 @@ void GPS_USART_Init()
     /* 试：定位更新频率设为 10Hz（100ms）。恢复 1Hz 用 "$PCAS02,1000*2E\r\n" */
     GPS_Send_Cmd("$PCAS02,100*1E\r\n");
 
-    /* 语句输出：RMC/GGA/GSA 每帧，GSV/VTG/ZDA/GLL 关闭（省带宽） */
-    GPS_Send_Cmd("$PCAS03,1,0,1,0,1,0,0,0,0,0,,,1,1,,,,0*33\r\n");
+    /* 语句输出：RMC/GGA/GSA/GSV 每帧，VTG/ZDA/GLL 关闭（GSV 用于上报 C/N0 信噪比） */
+    GPS_Send_Cmd("$PCAS03,1,0,1,1,1,0,0,0,0,0,,,1,1,,,,0*32\r\n");
     // GPS_Send_Cmd("$PCAS03,1,1,1,1,1,1,1,1,1,1,0,0,,,1,1,,,,1*33\r\n");
+}
+
+/* 配置指令重发：$PCAS02/$PCAS03 在 GPS_USART_Init() 里只发一次，而那一刻 GPS 模块
+ * 自身可能还没启动完（模块启动要 100~500 ms），命令被丢掉，模块回落到默认配置
+ * —— 表现就是"有定位、RMC/GGA/GSA 都正常，但 GSV 一条都没有"（实测三次记录 gsv_cnt 恒 0，
+ * 而同一条表查找路径上的 GSA 速率完全正常，说明不是命令头不匹配）。
+ * 上电后按下面的时刻重发几次即可，重发期间接收机正在运行、一定收得到。
+ * 单位 10 ns（与 gps_clk 同基）。 */
+static const uint64_t s_cfg_tick[5] = {
+    0ULL, 50000000ULL, 100000000ULL, 200000000ULL, 500000000ULL
+};                                              /* 0 / 0.5 / 1 / 2 / 5 s */
+static uint8_t  s_cfg_n;
+static uint64_t s_cfg_t0;
+
+static void gps_cfg_retry(void)
+{
+    uint64_t now;
+    if (s_cfg_n >= 5u) return;
+    now = GetTime64_10Ns();
+    if (s_cfg_t0 == 0ULL) { s_cfg_t0 = now; if (now == 0ULL) return; }
+    if ((now - s_cfg_t0) >= s_cfg_tick[s_cfg_n]) {
+        GPS_Send_Cmd("$PCAS02,100*1E\r\n");      /* 10 Hz 定位更新率 */
+        GPS_Send_Cmd("$PCAS03,1,0,1,1,1,0,0,0,0,0,,,1,1,,,,0*32\r\n");  /* 开 GSV */
+        s_cfg_n++;
+    }
 }
 
 void GPS_Check()
 {
+    gps_cfg_retry();   /* 配置指令重发，见上 */
+
     /* 计算当前写指针位置（处理回绕） */
     uint32_t wr_idx = GPS_RX_BUFFER_SIZE - DMA2_Channel2->CNTR;
     if (wr_idx == GPS_RX_BUFFER_SIZE) wr_idx = 0;

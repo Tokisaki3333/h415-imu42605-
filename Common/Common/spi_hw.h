@@ -21,7 +21,6 @@ uint8_t SPI_ReadMulti(uint8_t reg, uint8_t len); /* burst 连续读：小核启�
 void     SPI1_DMA_Rx_Setup(volatile uint8_t *target, uint16_t len); /* RX 通道配置（大核接管）*/
 void    SPI_WriteReg(uint8_t reg, uint8_t data);           /* 写 42605 寄存器 */
 
-void icm52605_Init(void);
 void icm52605_Init_A(void);
 void icm52605_Init_B(void);
 #ifdef __cplusplus

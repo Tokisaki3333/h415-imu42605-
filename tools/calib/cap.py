@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-接管串口，按固定采样率抽取 JustFloat 四元数帧，二进制落盘。
+接管串口，按固定采样率抽取 JustFloat 帧，二进制落盘。
 
-帧: 4 x float32 小端 + 4 B 帧尾 00 00 80 7F = 20 B。
-分频按**帧计数**（不是按主机时间），所以采样点等间隔、不受主机调度抖动影响。
-落盘: 每样本 24 B = float64 t(s) + float32 q[4]。
-落盘节奏: 每 5 min flush+fsync 一次。
-端口断了（对端复位/重新枚举）自动重连，继续追加同一个文件。
+帧 = N 路 float32 小端 + 4 B 帧尾 00 00 80 7F（N 由固件决定：当前 7 = 四元数 + 世界系速度，
+     32 B 帧；历史上有过 4=q、7=q+加速度原始值、10=q+加速度+陀螺原始值）。
+**帧长自动识别**（找相邻两个帧尾的间距整除），所以固件改通道数不用改本脚本。
+分频按**帧计数**（不是按主机时间），采样点等间隔、不受主机调度抖动影响。
+落盘: 每样本 (16 + 4N) B = float64 帧序号 + float64 主机时刻 + float32 v[N]；
+      同时在 <out>.meta 里写 "通道数 帧长"，供 cap_read.py 解析。
+落盘节奏: 每 5 min flush+fsync 一次。端口断了自动重连，继续追加同一个文件。
 停止: 建一个 cap.stop 文件，或到 --hours。
 """
 import os, struct, sys, time
@@ -14,7 +16,19 @@ import serial
 
 PORT, RATE, HOURS, FLUSH = 'COM4', 10.0, 8.0, 300.0
 OUT = sys.argv[1] if len(sys.argv) > 1 else time.strftime('static_%Y%m%d_%H%M%S.bin')
-TAIL, FRAME, STOP = b'\x00\x00\x80\x7f', 20, 'cap.stop'
+TAIL, STOP = b'\x00\x00\x80\x7f', 'cap.stop'
+
+
+def detect_frame(buf):
+    """相邻两个帧尾的间距 = 帧长；要求帧长 8..256 且 (帧长-4) 是 4 的倍数"""
+    i = buf.find(TAIL)
+    if i < 0:
+        return None
+    j = buf.find(TAIL, i + 4)
+    if j < 0:
+        return None
+    n = j - i
+    return n if (8 <= n <= 256 and (n - 4) % 4 == 0) else None
 
 
 def open_port():
@@ -59,8 +73,15 @@ def main():
             n += 1
             del buf[:i + 4]
     fps = n / (time.perf_counter() - t0)
+    frame = detect_frame(buf)
+    while frame is None:
+        buf += sp.read(65536)
+        frame = detect_frame(buf)
+    nch = (frame - 4) // 4
     step = max(1, int(round(fps / RATE)))
-    print("实测 %.0f fps -> 每 %d 帧取 1 个 (%.2f Hz)" % (fps, step, fps / step), flush=True)
+    print("实测 %.0f fps  帧长 %d B -> %d 路 float  -> 每 %d 帧取 1 个 (%.2f Hz)"
+          % (fps, frame, nch, step, fps / step), flush=True)
+    open(OUT + '.meta', 'w').write("%d %d\n" % (nch, frame))
 
     f = open(OUT, 'wb', buffering=0)     # 无缓冲：每条样本立即进 OS 缓存，文件大小实时可见
     t_start = time.perf_counter()
@@ -105,14 +126,15 @@ def main():
                 break
             if i + 4 > len(buf):
                 break
-            if i >= FRAME - 4:
-                q = struct.unpack_from('<4f', buf, i - (FRAME - 4))
+            if i >= frame - 4:
+                v = struct.unpack_from('<%df' % nch, buf, i - (frame - 4))
                 nframe += 1
                 cnt += 1
                 if cnt >= step:
                     cnt = 0
                     # 时间基准用**帧序号**（等间隔），主机时钟只作旁证
-                    f.write(struct.pack('<dd4f', float(nframe), time.perf_counter() - t_start, *q))
+                    f.write(struct.pack('<dd', float(nframe), time.perf_counter() - t_start))
+                    f.write(struct.pack('<%df' % nch, *v))
                     nsamp += 1
             del buf[:i + 4]
         now = time.perf_counter()

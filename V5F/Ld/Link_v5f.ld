@@ -1,7 +1,6 @@
 ENTRY( _start )
 
-__stack_size = 2048;
-
+__stack_size = 32768;
 PROVIDE( _stack_size = __stack_size );
 
 MEMORY

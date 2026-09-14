@@ -1,0 +1,268 @@
+#ifndef __V5F_TUNE_H
+#define __V5F_TUNE_H
+
+/* =====================================================================
+ * V5F 工况可调参数集中表
+ * =====================================================================
+ * 本文件**只放"随工况/机型/环境显著变化、需要按实机重新选型"的参数**。
+ *
+ * 不在这里的（它们跟随器件、不随工况调，见 v5f_proc.h）：
+ *   · 陀螺逐轴标度 / 对称交叉耦合 / g 敏感度      —— 逐器件标定结果
+ *   · 加速度计逐轴标度 / 离线零偏初值              —— 逐器件标定结果
+ *   · 陀螺离线零偏初值 GB_BIAS0_LSB_*             —— 逐器件标定结果
+ *     ★ 注意：零偏的**真值以在线追踪值为准**，上面那个常量只是帮上电收敛的
+ *       通用值，实测偏差可达 100 deg/h 量级，那是设计预期。
+ *   · 单位换算常量（1e-8 tick->s、pi/180 等）
+ *
+ * ★ 写这一条的原则：**凡是"另一个量的两种写法"一律写成派生式**，不留两个独立数字。
+ *   曾经踩过：tau_p 从 14 改成 13 但 ALPHA_WORK 没跟着改，有效时间常数根本没变。
+ *
+ * 调参优先级（按对飞行的影响从大到小）：
+ *   1) B 组 GB_TAU_TICKS      —— 决定"上电要等多久零偏才收敛"，最影响手感
+ *   2) A 组 V5F_DET_*         —— 决定 is_static 产率，进而决定 1) 能拿到多少时间
+ *   3) C 组 V5F_ATT_TILT_*    —— 决定姿态的固定偏差与悬停时能否用重力校准
+ *   4) F 组 V5F_VEL_DECAY_K   —— 决定速度死区（原地自稳的"零漂移"范围）
+ *   5) D/E 组                 —— 决定零偏牵引收敛快慢与机动期间是否误牵引
+ *
+ * 后期计划：板上自动整定。本表按"一个参数一行、语义独立、无隐藏耦合"组织，
+ *   便于把右值替换成运行时可变量（建议后续给每组加一个 float 影子变量 +
+ *   #define 指向它，或在初始化时从 Flash 载入）。
+ * ===================================================================== */
+
+
+/* =====================================================================
+ * A 组：动静判定（处理函数 2）—— 陀螺侧的静态门
+ * =====================================================================
+ * 统计量 s = max_axis |W 帧滑窗均值|，其噪声尺度 sigma_s = sigma_raw/sqrt(W)。
+ * 判据 thr(T) = clamp(K*sigma_eff(T), base, 上限)，证据不足时抬高阈值。
+ *
+ * ★★ W 是"悬停时能不能判静"的总开关：机身振动在几十~几百 Hz，W 太短（16 ms）
+ *    根本平不掉振动，level 一直高 -> is_static 恒 0 -> 悬停时陀螺零偏牵引与
+ *    倾斜融合**同时失效**（姿态只能靠陀螺积分，原地自稳有时间上限）。
+ *      W | 窗长  | sigma_s   | base=10*sigma_s | 振动抑制
+ *     ---+-------+-----------+----------------+---------
+ *     128| 16 ms | 0.01082   | 0.108 dps      |  1x  <- 原值
+ *     512| 64 ms | 0.00541   | 0.054 dps      |  4x
+ *    1024|128 ms | 0.00383   | 0.038 dps      |  8x
+ *    2048|256 ms | 0.00271   | 0.027 dps      | 16x
+ *   加长窗口几乎不损失转动检测：实测真转动在窗口均值里的含量，
+ *   W=128 时 0.0195 dps、W=1024 时约 0.0069 dps，仍远低于新阈值。
+ *   ★ 代价：① s_thr_tab 必须按新 W 用 tools/calib/build_thr_table.py 重生成；
+ *           ② 判运动延迟变长，V5F_PROC_ROLLBACK_GRANULES 要按新延迟复核。
+ */
+#define V5F_DET_SIGMA_RAW      0.1224f   /* 实测陀螺单样本噪声 dps（三轴平均） */
+#define V5F_DET_K_SIGMA        10.0f     /* 虚警预算 K 倍 sigma */
+#define V5F_DET_W              128u      /* 判静滑窗帧数 = W * 124.66us */
+#define V5F_DET_THR_BASE       0.108f    /* = K*sigma_raw/sqrt(W) = 10*0.1224/sqrt(128) */
+#define V5F_DET_THR_OFF_RATIO  0.6f      /* 回判静止阈值 = 0.6 * 当前阈值（滞回） */
+#define V5F_DET_DEB_ON         8u        /* 连续 8 帧(1 ms)超阈 -> 判运动（快） */
+#define V5F_DET_DEB_OFF        800u      /* 连续 800 帧(100 ms)低阈 -> 判静止（慢） */
+#define V5F_DET_THR_NBUCK      20u       /* 阈值查找表档数（与 build_thr_table.py 一致） */
+#define V5F_DET_THR_SHIFT      7u        /* 证据粒度数 -> 查表下标的右移量 */
+
+
+/* =====================================================================
+ * B 组：陀螺零偏牵引（处理函数 1）—— 决定"上电等多久才能飞"
+ * =====================================================================
+ * 静止时一阶牵引 bias += (raw - bias)*dt/tau，分两段：
+ *   启动段 tau_boot（快收敛）-> 累计静止满 3*tau_boot 后切工作段 tau_work。
+ *
+ * ★ tau_work 是**对"能不能飞"影响最大的参数**：它决定残余零偏多久收敛到目标值。
+ *   设上电初值误差 e0 = 94 deg/h（会话内实测），boot 段 3 s 后残余 4.68 deg/h，
+ *   之后按 e^(-T/tau_work) 衰减：
+ *     tau_work | 到 2 deg/h 需累计静止 | 到 3 deg/h | 估计器自身噪声
+ *     ---------+-----------------------+------------+----------------
+ *        24 s  |       23.3 s          |   13.6 s   |   0.71 deg/h
+ *        12 s  |       13.2 s          |    8.3 s   |   1.00 deg/h   <- 原值
+ *         6 s  |        8.1 s          |    5.6 s   |   1.42 deg/h
+ *         4 s  |        6.4 s          |    4.8 s   |   1.74 deg/h
+ *        12 -> 6 s：等待时间砍 40%，总误差 2.24 -> 2.45 deg/h（几乎不变）。
+ *   实测核对：累计静止 8.34 s -> 3.0 deg/h（模型 2.99）。
+ *   噪声公式 sigma_b = sigma_raw*sqrt(dt/(2*tau))，sigma_raw 见 A 组。
+ */
+#define GB_TAU_TICKS           1200000000ULL  /* tau_work = 12 s（单位 10 ns 计数） */
+#define GB_TAU_BOOT_TICKS      100000000ULL   /* tau_boot = 1 s */
+#define GB_BOOT_TICKS          (3ULL * GB_TAU_BOOT_TICKS)   /* 3*tau_boot = 3 s，锁存 bias_ok */
+#define GB_SNAP_TICKS          2000000ULL     /* 快照粒度 = 20 ms */
+#define GB_HIST_DEPTH          64u            /* 快照深度 64 格 = 1.28 s（回退用） */
+/* ★ 派生式：改 tau 只需改上面两个 TICKS，别另写数字 */
+#define GB_ALPHA_WORK_TICK     (1.0f / (float)GB_TAU_TICKS)       /* 每 tick 系数 = 1/tau_work */
+#define GB_ALPHA_BOOT_TICK     (1.0f / (float)GB_TAU_BOOT_TICKS)  /* 每 tick 系数 = 1/tau_boot */
+
+
+/* =====================================================================
+ * C 组：倾斜融合（处理函数 3）—— 用重力持续校准姿态
+ * =====================================================================
+ * omega_tilt = +K * (a_hat x g_hat)，K = (180/pi)/tau，**单位 dps、dt 不折进去**
+ *   （dt 由 proc_attitude.c 的 half 统一乘）。
+ * 分两段：启动段 tau_boot 快速把参考系拉对齐，bias_ok 后切工作段。
+ *
+ * ★ 本环是纯 P 环，对常值速率扰动（残余零偏 omega_res）留稳态倾角
+ *     tilt_eq = omega_res * tau_eff,  tau_eff = 1/(1/tau_tilt + 1/tau_p)
+ *   这个倾角直接漏重力进 a_lin，而 a_lin 的直流又决定速度：
+ *     omega_res |  tau_tilt=5 s(tau_eff=3.61)  |  tau_tilt=30 s(tau_eff=9.07)
+ *     ----------+------------------------------+----------------------------
+ *      3 deg/h  |        0.0030 deg            |        0.0076 deg
+ *     30 deg/h  |        0.0301 deg            |        0.0756 deg
+ *     94 deg/h  |        0.0943 deg            |        0.2367 deg
+ *   ★ 与速度死区的关系（原地自稳）：K=0.05 m/s^2 对应倾角死区 0.2924 deg，
+ *     只要 tilt_eq 在里面速度就**精确为 0**。校准开着时残余零偏直到 ~291 deg/h
+ *     都还在死区内；校准关着时 3 deg/h 也只能撑 5.8 min。**悬停必须能跑本环。**
+ *
+ * ★ 门控用的是 gate->att_tilt（由处理函数 5 独立算出），判据 = |off| 在
+ *   [ALIM_LO, ALIM_HI] 且陀螺判静。ALIM 对**姿态歪**免疫、只对线加速度敏感，
+ *   但它是二阶量：+-5% 容得下 |a_h| 到 3.1 m/s^2（会把估计的"上"拉偏 17.5 deg），
+ *   所以"陀螺判静"那一条不能省。要更保守就把 ALIM_HI 收到 1.02（对应 11 deg 倾斜）。
+ */
+/* [20260914 判据落地] 上面这段描述的判据原先**没有真正生效**：proc_acc_gate.c 里
+ *   额外与了 h->stat.is_static，而手持/悬停时 16 ms 陀螺窗均值被手抖/机身振动顶到
+ *   1.7~2.1 dps，is_static 只有 10% -> 重力牵引 90% 的时间关着 -> 上面列的 tilt_eq
+ *   根本享受不到，姿态只能按残余零偏自由漂（实测 0.0174 dps = 63 deg/h，1 min 1.05 deg）。
+ *   实测 20260914_073640（手持静止 20.63 s、手抖 2.07 dps）证明加速度计全程都是
+ *   合法重力参考：|off| 中位数 1.0003 g；比力方向与**纯陀螺积分**出的重力方向夹角
+ *   p50 0.49 deg、p99 2.50 deg、<=2 deg 占 97.7%。故 20260914 起判据改为：
+ *   **V5F_ATT_TILT_W(128 ms) 窗内 |off| 均值落在 1 g +-5%**，不再读 is_static。
+ *   20 g 冲击会把窗均值顶出带外 -> 自动关门（070300 剧烈段 vs 纯陀螺 max 偏差 0.20 deg）。
+ *   验收：att_tilt 占空比 10.0% -> 100.0%；夹角上升率 0.01707 -> 0.01005 deg/s。
+ *   已知耦合：门B 常开会让门A 的 |w| 变小、零偏环更容易工作，但零偏被
+ *   V5F_ACC_TRACTION_BIAS_LIM_MG 钳住，实测未见顶限幅。 */
+#define V5F_ATT_TILT_TAU_S       5.0f    /* 工作段 tau（s） */
+#define V5F_ATT_TILT_TAU_BOOT_S  1.0f    /* 启动段 tau（s），与陀螺牵引启动段同值 */
+#define V5F_ATT_TILT_ALIM_LO     0.95f   /* 倾斜环门：|off| 下界（单位 g） */
+#define V5F_ATT_TILT_ALIM_HI     1.05f   /* 倾斜环门：|off| 上界（单位 g） */
+/* ★ 派生式 */
+#define V5F_ATT_TILT_W           1024u   /* 门B 判据统计窗：128 ms @8.03 kHz */
+#define V5F_ATT_TILT_K         (57.29578f / V5F_ATT_TILT_TAU_S)
+#define V5F_ATT_TILT_K_BOOT    (57.29578f / V5F_ATT_TILT_TAU_BOOT_S)
+#define V5F_ATT_TILT_ALIM_LO2  (V5F_ATT_TILT_ALIM_LO * V5F_ATT_TILT_ALIM_LO)
+#define V5F_ATT_TILT_ALIM_HI2  (V5F_ATT_TILT_ALIM_HI * V5F_ATT_TILT_ALIM_HI)
+
+
+/* =====================================================================
+ * D 组：加速度零偏牵引（处理函数 4）—— PI（二阶）环
+ * =====================================================================
+ *   dz/dt = e*S/T_i ；  db/dt = e*S/tau_p + z
+ * 二阶的理由：一阶环对驱动量里的常量/斜坡扰动留残差，加积分状态变 type-2 后归零。
+ * ★ tau_p 是按**带零点的闭环实测过冲**定的，不是按标称 zeta —— 别用纯二阶公式反推。
+ *   现值 tau_p=13 s / T_i=400 s^2 -> omega_n = 1/sqrt(T_i) = 0.05 rad/s。
+ * ★ 本环只影响 a_lin/速度，**不影响姿态**。
+ * ★ tau_p 与倾斜环并联作用于同一个 a_lin（tau_eff 见 C 组），两者时间常数要拉开。
+ * ★ 过冲/斜坡残差的历史数据（仅对旧 T_i = 2 s^2 成立）见 v5f_proc.h 的 PI 段说明。
+ */
+#define V5F_ACC_TRACTION_TAU_P_WORK_S  13.0f      /* 工作段比例项 tau_p（s） */
+#define V5F_ACC_TRACTION_TI_WORK_S2    400.0f     /* 工作段积分时间 T_i（s^2）= 1/omega_n^2 */
+#define V5F_ACC_TRACTION_TAU_P_BOOT_S  7.0f       /* 启动段 tau_p（s） */
+#define V5F_ACC_TRACTION_TI_BOOT_S2    100.0f     /* 启动段 T_i（s^2） */
+#define V5F_ACC_TRACTION_DT_SCALE      1e-8f      /* tick -> s */
+#define V5F_ACC_TRACTION_RATE_LIM_LSB  500.0f     /* 积分状态 z 的限幅（LSB/s） */
+#define V5F_ACC_TRACTION_SNAP_TICKS    2000000ULL /* 零偏快照粒度 = 20 ms */
+#define V5F_ACC_TRACTION_HIST          64u        /* 快照深度 64 格 = 1.28 s */
+#define V5F_ACC_TRACTION_BOOT_TICKS    300000000ULL /* 累计牵引满 3 s 后由启动段切工作段 */
+#define V5F_ACC_TRACTION_BIAS_LIM_MG   40.0f      /* 零偏相对离线初值的钳位（mg） */
+/* ★ 派生式：ALPHA 是"每 tick 系数"，与 tau 是同一个量的两种写法，必须一起变 */
+#define V5F_ACC_TRACTION_ALPHA_WORK    (V5F_ACC_TRACTION_DT_SCALE / V5F_ACC_TRACTION_TAU_P_WORK_S)
+#define V5F_ACC_TRACTION_ALPHA_BOOT    (V5F_ACC_TRACTION_DT_SCALE / V5F_ACC_TRACTION_TAU_P_BOOT_S)
+#define V5F_ACC_TRACTION_ALPHA_I_WORK  (V5F_ACC_TRACTION_DT_SCALE / V5F_ACC_TRACTION_TI_WORK_S2)
+#define V5F_ACC_TRACTION_ALPHA_I_BOOT  (V5F_ACC_TRACTION_DT_SCALE / V5F_ACC_TRACTION_TI_BOOT_S2)
+
+
+/* =====================================================================
+ * E 组：加速度牵引的**外部门控**（处理函数 5）
+ * =====================================================================
+ * 判据 w = (accel_lsb - 离线零偏)/标度 - R(q)^T*up_ref，比较 |w|^2：
+ *   牵引中 |w| > OFF -> 冻结（快，8 帧 = 1 ms）
+ *   冻结中 |w| < ON  -> 恢复（慢，800 帧 = 100 ms）
+ * ★ 判据必须用**离线标定常量**算，不能用 a_lin（自引用会锁死）。
+ * ★ ON 必须高于"真静止时的残余"，否则门在真静止时打不开；OFF 必须低于真实机动。
+ * ★ 门 B（倾斜融合的 att_tilt）在同一个函数里**独立**算出，不复用本组判据。
+ */
+#define V5F_ACG_ALIN_ON_MG     40.0f     /* 可恢复牵引的残余上界（mg） */
+#define V5F_ACG_ALIN_OFF_MG    100.0f    /* 应冻结的残余下界（mg），2.5 倍滞回 */
+#define V5F_ACG_DEB_ON         800u      /* 恢复去抖：连续 800 帧(100 ms)在 ON 以下 */
+#define V5F_ACG_DEB_OFF        8u        /* 冻结去抖：连续 8 帧(1 ms)超 OFF */
+#define V5F_ACG_ROLLBACK_GRANULES 1u     /* 牵引->冻结边沿回退的 20 ms 粒度数 */
+/* ★ 派生式 */
+#define V5F_ACG_ALIN_ON2       ((V5F_ACG_ALIN_ON_MG  * 1e-3f) * (V5F_ACG_ALIN_ON_MG  * 1e-3f))
+#define V5F_ACG_ALIN_OFF2      ((V5F_ACG_ALIN_OFF_MG * 1e-3f) * (V5F_ACG_ALIN_OFF_MG * 1e-3f))
+
+
+/* =====================================================================
+ * F 组：世界系速度（处理函数 6）
+ * =====================================================================
+ * 递推：v += a_nav*dt ；然后**两级衰减叠加**：
+ *   ① 乘性   v *= (1 - h/tau)    管**大**速度
+ *   ② 常速率 |v| -= K*h          管**小**速度
+ *
+ * ★ 为什么必须两级（这是实测事故换来的）：
+ *   只用常速率（K=0.05）时，减掉的量恒为 K*h，**与 |v| 无关** -> 大速度是线性斜坡，
+ *   从 v0 刹到 0 要 v0/K 秒、走过 v0^2/(2K)。实测 20260914_070300：
+ *   机动结束残留 0.74 m/s（姿态误差约 0.27 deg 的正常航位推算误差），
+ *   常速率要 14.8 s 才杀完，期间位置漂 **竖直 5.93 m / 水平 1.60 m**（严重失效外漂）。
+ *   只用乘性则大速度刹得住（路程 ~ v0*tau），但小速度有指数尾、稳态停在
+ *   a_bias*tau 而不是 0，而且反相（见下）。
+ *   两级叠加后同一段驱动重放：竖直 0.63 m / 水平 0.087 m（比现状好 9.4~18 倍）。
+ *
+ * ★ 乘性的两个副作用，都是**已知且可接受**的：
+ *   · 反相：乘性减掉的量 = |v|*h/tau 正比于 |v|，会把"推出去再拉回来"的正向摆幅
+ *     按比例吃掉，速度穿过 0 反相（实测反相达峰值 23%）。用 K 那条线性项把它压住：
+ *     反相幅度降到约 9%，且随 tau 在几秒内消失。
+ *   · 稳态偏差：乘性单独用会停在 a_bias*tau；由 ② 的线性项兜底成**精确 0**。
+ * ★ K 是原地自稳的死区：倾角误差 < asin(K/g) 时速度恒 0，飞控看不到假漂移。
+ *     K (m/s^2) |  = mg   | 能压住的 a_bias | 倾角死区  | 1 s 机动损失
+ *     ----------+---------+----------------+-----------+-------------
+ *       0.05    |  5.10   |    < 5.10 mg   |  0.2924deg|  0.050 m/s  <- 原值
+ *       0.10    | 10.21   |   < 10.21 mg   |  0.5848deg|  0.100 m/s
+ *       0.20    | 20.41   |   < 20.41 mg   |  1.1696deg|  0.200 m/s
+ *   实测残余 a_bias ~2.2 mg，0.05 留 2.3 倍余量。速度不参与姿态控制，K 加大只损失
+ *   机动保真、换来更宽的零漂移区。
+ */
+#define V5F_VEL_G_LOCAL        9.7985f   /* 本地重力 m/s^2（随纬度变化，按场地改） */
+#define V5F_VEL_DECAY_K        0.05f     /* 常速率地板（m/s^2）：管小速度，|a_bias|<K 时精确归零 */
+#define V5F_VEL_DECAY_TICK_S   1e-8f     /* 10 ns 计数 -> s */
+/* ---- 速度的**软 ZUPT**（外部连续门，见 proc_acc_gate.c 门 C）----
+ * ★ 成熟做法，不是硬"速度归零门"：衰减**时刻都在跑**，置信度 lam 只调**速率**：
+ *     rate = lam/tau_fast + (1-lam)/tau_slow      v *= (1 - h*rate)
+ *   lam -> 1（判定静止）：速率大，幽灵速度在 tau_fast 量级内消失；
+ *   lam -> 0（机动中）：  速率小，真实速度几乎不损失。
+ *   出处：Wahlstroem&Skog, "Fifteen Years of Progress at Zero Velocity"（arXiv 2008.09208）；
+ *         OpenShoe（hcarlsso/ZUPT-aided-INS）的互补反馈 + 伪观测结构；
+ *         Engelsman&Klein, "C-ZUPT: Stationarity-Aided Aerial Hovering"
+ *         （arXiv 2507.09344）—— 正是四旋翼悬停场景。
+ * ★ 自适应阈值：文献里贝叶斯阈值的损失因子随"距上次零速观测的时间"衰减，
+ *   效果是"既不让系统太久没有 ZUPT，也不至于滥加 ZUPT"。这里实现成
+ *   lam 的**下限随时间抬升**：距上次高置信锚点越久，衰减越快 -> 幽灵速度不可能长期存在。
+ *
+ * 定标（20260914_070300 实测失效记录，同一段驱动重放；原设计漂 竖直 5.93 m / 水平 1.60 m）：
+ *   衰减律                        竖直漂移  水平漂移  机动末|v|  |v|max  精确零速帧
+ *   ---------------------------  --------  --------  ---------  -------  ----------
+ *   纯常速率 K=0.05（原失效）     5.920 m   1.601 m    0.758      0.834    22.7%
+ *   乘性+常速率 固定 tau=1 s      0.632 m   0.087 m    0.774      0.816    72.4%
+ *   软 ZUPT tau_f=0.2/30         0.285 m   0.030 m    0.759      0.834    77.2%
+ *   三项指标同时最好（漂移好 20.8 倍，运动保真还比固定版更强）。 */
+#define V5F_VEL_ZUPT_TAU_FAST_S  0.20f   /* lam=1 时的衰减时间常数（s） */
+#define V5F_VEL_ZUPT_TAU_SLOW_S  30.0f   /* lam=0 时的衰减时间常数（s） */
+#define V5F_VEL_ZUPT_LEV_DPS     0.20f   /* 陀螺 level 低于它算"静止"（置信度 -->
+                                          * 1；到 0 时置信度 0）。注意要宽松：悬停时机身
+                                          * 振动会让 level 偏高，太严就等于悬停时没有 ZUPT。 */
+#define V5F_VEL_ZUPT_AMAG_G      0.05f   /* |比力|-1g 的容差（g） */
+#define V5F_VEL_ZUPT_ANCHOR      0.80f   /* 置信度高于它就刷新"锚点"时刻 */
+#define V5F_VEL_ZUPT_FORCE_S     5.0f    /* 距上次锚点这么久后，置信度下限抬到 1 */
+/* ★ 派生式 */
+#define V5F_VEL_ZUPT_RATE_FAST   (1.0f / V5F_VEL_ZUPT_TAU_FAST_S)
+#define V5F_VEL_ZUPT_RATE_SLOW   (1.0f / V5F_VEL_ZUPT_TAU_SLOW_S)
+
+
+/* =====================================================================
+ * G 组：处理链门控的公共参数
+ * ===================================================================== */
+#define V5F_PROC_ROLLBACK_GRANULES  24u  /* 静止->运动边沿回退的 20 ms 粒度（= 480 ms） */
+#define V5F_PROC_GATE_INIT_STATIC   1u   /* 门控上电初值：先按静止处理 */
+
+
+/* =====================================================================
+ * 与工况无关、仅作引用（值在 v5f_proc.h）
+ * ===================================================================== */
+/* V5F_ACC_TRACTION_ZETA        有效阻尼 zeta（仅记录，代码不用） */
+/* V5F_ACC_TRACTION_FLAG_ROLLBACK / V5F_GYRO_CORR_FLAG_ROLLBACK  标志位，非参数 */
+
+#endif /* __V5F_TUNE_H */

@@ -1,0 +1,473 @@
+#include "SPI_rx.h"
+#include "mipc_shm.h"               /* g_shm：双核共享区（V3F 小核定义） */
+#include "hardware.h"               /* ch32h417.h + debug.h：外设寄存器 / 中断 / Core_ID_V5F */
+#include "spi_hw.h"                 /* SPI1_DMA_Rx_Setup */
+#include "sys_clk.h"                /* GetTime64_Us */
+#include "v5f_proc.h"               /* 处理链：处理函数原型 + 门控类型 */
+#include "usbd_compatibility_hid.h" /* hid_up_enqueue：JustFloat 帧入 CDC 上行环 */
+#include <string.h>                 /* memcpy：float 按字节直拷 */
+#include <math.h>                   /* sqrtf：-Ofast 下一条 fsqrt.s，不引入 libm 调用 */
+
+/* ==================== 内部私有变量 ==================== */
+static volatile uint8_t rxfifo[512];
+
+/* DMA1_Channel2 中断单次执行耗时历史最劣值 us（备用，暂无消费者） */
+/* 本 ISR 的耗时（us）。注意 justfloat_report() 在 ISR 里跑的位置早于计时结束那行，
+ * 所以上报的是**上一帧**的耗时（一帧滞后，对性能监控无影响）。 */
+static volatile uint32_t s_dma1_irq_us = 0;
+/* 上报用：当帧 DRDY 间隔（通道 27）。上报在 ISR 内、与处理链同帧，故这里的时间戳
+ * 就是本帧 fresh.drdy_tick；差值乘 1e-2 得 us（1 tick = 10 ns）。 */
+static uint64_t s_rep_last_tick = 0;
+static uint8_t  s_rep_tick_ok   = 0;
+
+/* ==================== 磁力计标定常量实体化 ====================
+ * 数值在 v5f_tune.h 的 H 组（放那儿是因为它随装机变）。这里只做一次实体化，
+ * 避免那张表被 v5f_proc.h 广泛 include 时在每个编译单元都生成一份没人用的数组。
+ * 用 #if 包住也是为了让 V5F_MAG_CAL_EN=0 时不留未使用的 static 变量（-Wunused）。 */
+#if (V5F_MAG_CAL_EN != 0u)
+static const float s_mag_A[3][3] = V5F_MAG_A_INIT;
+static const float s_mag_C[3]    = V5F_MAG_C_INIT;
+#endif
+
+/* ==================== 数据保持器实例 ==================== */
+volatile v5f_hold_t g_v5f_hold = { 0 };
+
+/* ==================== 处理链门控实例 ====================
+ * 由处理函数 2（动静判定）每帧写入，处理函数 1 下一帧读取；
+ * 初值：按静止、回退 24 格（处理函数 2 第一帧即接管）。 */
+volatile v5f_proc_gate_t g_v5f_proc_gate = {
+    V5F_PROC_GATE_INIT_STATIC,   /* is_static            */
+    V5F_PROC_ROLLBACK_GRANULES,  /* rollback_granules    */
+    V5F_PROC_GATE_INIT_STATIC,   /* acc_traction         */
+    V5F_ACG_ROLLBACK_GRANULES,   /* acc_rollback_granules*/
+    V5F_PROC_GATE_INIT_STATIC,   /* att_tilt             */
+    255u };                      /* vel_soft = 1.0 -> 上电先按"静止"快衰减 */
+
+/* ==================== 处理链错误码锁存（0 = 未出错） ==================== */
+static volatile uint8_t s_proc_err_gyro_bias = V5F_PROC_OK;
+static volatile uint8_t s_proc_err_static    = V5F_PROC_OK;
+static volatile uint8_t s_proc_err_attitude  = V5F_PROC_OK;
+static volatile uint8_t s_proc_err_accel_cal = V5F_PROC_OK;
+static volatile uint8_t s_proc_err_acc_gate  = V5F_PROC_OK;
+static volatile uint8_t s_proc_err_velocity  = V5F_PROC_OK;
+
+/* ==================== 各共享通道 cnt 快照（变化检测用） ==================== */
+static uint32_t s_last_gyro_cnt = 0, s_last_ist_cnt = 0, s_last_bmp_cnt = 0;
+static uint32_t s_last_gps_rmc_cnt = 0, s_last_gps_gga_cnt = 0, s_last_gps_gsa_cnt = 0;
+
+/* ==================== 保持器维护 ====================
+ * 每通道都是"检测到 cnt 变化 → __sync_synchronize() → 读 ts/数据/flags"（与写端 release 配对；
+ * RISC-V 弱内存序下 load 可重排，缺此屏障会读到上一帧）。低频文本由主循环直接读 g_shm->log。 */
+static void hold_poll(void)
+{
+    uint32_t c;
+
+    /* 陀螺通道：只有 DRDY 时间戳（六轴原始值走 SPI DMA 帧） */
+    c = g_shm->gyro.hdr.cnt;
+    if (c != s_last_gyro_cnt) {
+        s_last_gyro_cnt = c;
+        __sync_synchronize();
+        g_v5f_hold.imu.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gyro.hdr);
+    }
+
+    /* IST8310（磁力计）：原始 LSB 直通 */
+    c = g_shm->ist.hdr.cnt;
+    if (c != s_last_ist_cnt) {
+        s_last_ist_cnt = c;
+        __sync_synchronize();
+        g_v5f_hold.mag.fresh.drdy_tick = shm_chan_ts_read(&g_shm->ist.hdr);
+        g_v5f_hold.mag.lsb[0] = g_shm->ist.mx;
+        g_v5f_hold.mag.lsb[1] = g_shm->ist.my;
+        g_v5f_hold.mag.lsb[2] = g_shm->ist.mz;
+
+        /* 线性标定 + 污染门（参数与依据见 v5f_tune.h 的 H 组）。
+         * y = A*raw + C，A 里已含 z 取反。raw **不做任何裁剪** —— 越界样本靠 y 的
+         * 模长门判掉（mag.ok=0），而不是靠截断掩盖成"看起来正常"。
+         * f 统一归一化成单位矢量，消费方不必再除模长；mag_norm 保留归一化前的模长
+         * 作为门的观测量。这段只在磁样本到达时跑（约 187 Hz），不在每帧的路径上。 */
+        {
+            float yx, yy, yz, n, s;
+#if (V5F_MAG_CAL_EN != 0u)
+            yx = s_mag_A[0][0] * (float)g_v5f_hold.mag.lsb[0]
+               + s_mag_A[0][1] * (float)g_v5f_hold.mag.lsb[1]
+               + s_mag_A[0][2] * (float)g_v5f_hold.mag.lsb[2] + s_mag_C[0];
+            yy = s_mag_A[1][0] * (float)g_v5f_hold.mag.lsb[0]
+               + s_mag_A[1][1] * (float)g_v5f_hold.mag.lsb[1]
+               + s_mag_A[1][2] * (float)g_v5f_hold.mag.lsb[2] + s_mag_C[1];
+            yz = s_mag_A[2][0] * (float)g_v5f_hold.mag.lsb[0]
+               + s_mag_A[2][1] * (float)g_v5f_hold.mag.lsb[1]
+               + s_mag_A[2][2] * (float)g_v5f_hold.mag.lsb[2] + s_mag_C[2];
+#else
+            yx = (float)g_v5f_hold.mag.lsb[0];   /* 直通对照 */
+            yy = (float)g_v5f_hold.mag.lsb[1];
+            yz = (float)g_v5f_hold.mag.lsb[2];
+#endif
+            n = sqrtf(yx * yx + yy * yy + yz * yz);
+            s = (n > 1e-6f) ? (1.0f / n) : 0.0f;
+            g_v5f_hold.mag.f[0] = yx * s;
+            g_v5f_hold.mag.f[1] = yy * s;
+            g_v5f_hold.mag.f[2] = yz * s;
+            g_v5f_hold.mag.mag_norm = n;
+#if (V5F_MAG_CAL_EN != 0u)
+            g_v5f_hold.mag.ok = (uint8_t)((n > (1.0f - V5F_MAG_ERR_LIM)) &&
+                                          (n < (1.0f + V5F_MAG_ERR_LIM)));
+#else
+            g_v5f_hold.mag.ok = 1u;             /* 直通模式下模长无意义，不做门 */
+#endif
+        }
+
+        g_v5f_hold.mag.fresh.new_data = 1;      /* 数据写完后才置新数据信号 */
+    }
+
+    /* BMP388（气压计）：float 直通 */
+    c = g_shm->bmp.hdr.cnt;
+    if (c != s_last_bmp_cnt) {
+        s_last_bmp_cnt = c;
+        __sync_synchronize();
+        g_v5f_hold.baro.fresh.drdy_tick = shm_chan_ts_read(&g_shm->bmp.hdr);
+        g_v5f_hold.baro.temp_celsius  = g_shm->bmp.temp_celsius;   /* 共享区已是 float，无需换算 */
+        g_v5f_hold.baro.press_pascal  = g_shm->bmp.press_pascal;
+        g_v5f_hold.baro.fresh.new_data  = 1;
+    }
+
+    /* GPS RMC：经纬度保持共享区的 10^-7 ° 定标整数（float 精度不够），速度换算成 m/s */
+    c = g_shm->gps_rmc.hdr.cnt;
+    if (c != s_last_gps_rmc_cnt) {
+        s_last_gps_rmc_cnt = c;
+        __sync_synchronize();  
+        g_v5f_hold.gps_rmc.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_rmc.hdr);
+        g_v5f_hold.gps_rmc.fresh.flags     = g_shm->gps_rmc.flags;
+        g_v5f_hold.gps_rmc.lat_e7        = g_shm->gps_rmc.lat_e7;
+        g_v5f_hold.gps_rmc.lon_e7        = g_shm->gps_rmc.lon_e7;
+        g_v5f_hold.gps_rmc.speed_mps     = g_shm->gps_rmc.speed_mps;
+        g_v5f_hold.gps_rmc.status         = g_shm->gps_rmc.status;
+        g_v5f_hold.gps_rmc.date_ddmmyy    = g_shm->gps_rmc.date_ddmmyy;
+        g_v5f_hold.gps_rmc.fresh.new_data = 1;
+    }
+
+    /* GPS GGA：高度 cm→m、HDOP ×100→无量纲 float，定位质量/星数本就是小整数 */
+    c = g_shm->gps_gga.hdr.cnt;
+    if (c != s_last_gps_gga_cnt) {
+        s_last_gps_gga_cnt = c;
+        __sync_synchronize();  
+        g_v5f_hold.gps_gga.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_gga.hdr);
+        g_v5f_hold.gps_gga.fresh.flags     = g_shm->gps_gga.flags;
+        g_v5f_hold.gps_gga.alt_m        = (float)g_shm->gps_gga.alt_cm * 1e-2f;
+        g_v5f_hold.gps_gga.fix_quality  = g_shm->gps_gga.quality;
+        g_v5f_hold.gps_gga.sat_num      = g_shm->gps_gga.sv;
+        g_v5f_hold.gps_gga.hdop         = (float)g_shm->gps_gga.hdop_x100 * 1e-2f;
+        g_v5f_hold.gps_gga.fresh.new_data = 1;
+    }
+
+    /* GPS GSA：PDOP/VDOP（共享区 ×100 定标整数 → 无量纲 float） */
+    c = g_shm->gps_gsa.hdr.cnt;
+    if (c != s_last_gps_gsa_cnt) {
+        s_last_gps_gsa_cnt = c;
+        __sync_synchronize();               
+        g_v5f_hold.gps_gsa.fresh.drdy_tick = shm_chan_ts_read(&g_shm->gps_gsa.hdr);
+        g_v5f_hold.gps_gsa.fresh.flags     = g_shm->gps_gsa.flags;
+        g_v5f_hold.gps_gsa.pdop = (float)g_shm->gps_gsa.pdop_x100 * 1e-2f;
+        g_v5f_hold.gps_gsa.vdop = (float)g_shm->gps_gsa.vdop_x100 * 1e-2f;
+        g_v5f_hold.gps_gsa.fresh.new_data = 1;
+    }
+}
+
+/* ==================== JustFloat 上报帧组装（DMA-RX 内） ====================
+ * 54 路 float(小端 IEEE754) + 4 字节帧尾 00 00 80 7F = 220 字节：
+ *   1~4   姿态四元数 w, x, y, z（机体 -> 导航，右手系，见处理函数 3）
+ *   5~7   世界系（导航系）速度 m/s，见处理函数 6
+ *   8     判静统计量 stat.level_dps —— 陀螺侧门控的输入
+ *   9     陀螺静动判定 stat.is_static —— 陀螺零偏追踪门
+ *   10    加速度门可信 imu.acc_trust（= 上一帧的 acc_traction）
+ *   11    加速度零偏追踪门 gate.acc_traction（1 = 牵引，0 = 冻结）
+ *   12~14 牵引驱动量 a_lin[3]（g）—— 没被消掉的残余，速度漂移的直接来源
+ *   15~17 加速度零偏估计 accel_bias_g[3]（g）—— 看牵引是否在收敛/跑飞
+ *   18    打包标志位：bit0 bias_ok  bit1 up_ref_ok  bit2 att.valid  bit3 vel.valid
+ *         bit4 corr_valid  bit5 acc_valid  bit6 stat.valid  bit7 stat.changed
+ *         bit8 陀螺本帧回退  bit9 加速度本帧回退
+ *   19    上一帧 DMA1 ISR 耗时（us）—— 性能监控，可看逐帧分布与峰值。
+ *         当帧值拿不到：上报发生在 ISR 里、早于该帧计时结束那一行，所以发上一帧的。
+ *
+ *   ---- 20 起：原始量 + 时间基 + 竖直参考，供 PC 端离线重建整条处理链 ----
+ *   20~22 陀螺原始 LSB imu.gyro_lsb[3]（16.4 LSB/(deg/s)，±32768 = ±2000 deg/s）。
+ *         ★ 陀螺是整条链的主传感器 —— 姿态由它积分得出，故原始量排在最前。
+ *         有了它，PC 才能从原始值重跑 处理函数 1（零偏/逐轴标度/交叉耦合）与
+ *         处理函数 2 的判静统计量，而不是只能看已经算好的 gyro_dps
+ *         （那是被零偏追踪环改过的导出量，无法用来独立复核追踪环本身）。
+ *   23~25 加速度原始 LSB imu.accel_lsb[3]（2048 LSB/g，±32768 = ±16 g）。
+ *         与 20~22 合起来，整条处理链（校正/标定/牵引/门控/姿态/速度）都能在 PC 上重放。
+ *   26    陀螺温度 imu.temp_celsius（degC）—— 零偏随温度漂移，是零偏建模的解释变量。
+ *   27    当帧 DRDY 间隔 dt（us）—— 固件积分用的就是它。
+ *         ★ 必须上报：PC 端不能假设帧率恒定。1 tick = 10 ns，故 dt_us = tick 差 * 1e-2，
+ *         正常约 124.66 us；明显偏大 = 上游丢帧，等于 0 = 本帧没拿到基准或时间戳回退。
+ *   28    vel.age_s —— 距上次速度基本归零的秒数（速度还能信多久）。
+ *   29~31 att.up_ref[3] —— 世界竖直在**导航系**里的表示（去重力的基准）。
+ *         导航系由处理函数 3 用重力初始化成竖直（z = 上），所以这里恒为 (0,0,1)；
+ *         上报它是为了**验证**这件事真的成立 —— 不是 (0,0,1) 就说明参考系定错了。
+ *
+ *   ---- 32 起：各处理函数的中间结果 + 内部状态，供 PC 端逐环复核 ----
+ *   32~34 imu.gyro_dps[3] —— 处理函数 1 的零偏校正输出（deg/s，含逐轴标度与对称交叉）。
+ *         这是处理函数 2（判静统计量）与处理函数 3（四元数积分）**真正的输入**。
+ *   35~37 imu.gyro_bias_dps[3] —— 处理函数 1 内部的零偏估计本身（deg/s）。
+ *         ★ 唯一的**内部状态**，从任何其它通道都推不出来。陀螺零偏牵引到底有没有在
+ *         收敛、收敛到多少，只能靠它；没有它就只能拿 a_lin 去反推，而那是会推错的
+ *         （曾据此误判"牵引没跑"，实际它跑了 65.9% 的帧、残余 1.23 deg/h）。
+ *   38~40 imu.accel_g[3] —— 处理函数 4 用**牵引后**零偏重新算出的比力（g）。
+ *         ★ 注意它与 a_lin（12~14）不同源：a_lin 用的是牵引**前**的零偏（处理函数 4
+ *         的 2b 步，为了不带自引用），两者正好差一步 PI 更新。上报它才能把这一步
+ *         差看清楚，否则 a_lin 的逐帧预算总差一格。
+ *   41    imu.bias_evidence_gran —— 累积静止证据（20 ms 粒度数）。
+ *         它是处理函数 2 查判静阈值表的索引，也是回退时被扣减的量：
+ *         is_static 为什么开/关，用它 + level_dps 就能完整解释。
+ *   42    gate.att_tilt —— **重力/倾斜融合门**（处理函数 3 的倾斜环用）。
+ *         ★ 与 11 的 gate.acc_traction 是**两个不同的门**：11 用 |w|（对姿态歪敏感），
+ *         42 用 |off| 在 1 g ±5%（对姿态歪免疫）。曾经把两者混用，结果是交叉门控
+ *         死锁（061955：姿态歪 6.7 deg -> 11 关 -> 倾斜融合被一起关掉 -> 姿态回不来）。
+ *   43    gate.rollback_granules —— 陀螺零偏牵引在"静止→运动"边沿回退的 20 ms 粒度数。
+ *   44    gate.acc_rollback_granules —— 加速度零偏牵引在"牵引→冻结"边沿回退的粒度数。
+ *         ★ 这两条是**门控的输出参数**，与门本身一起构成"外部判定"的完整输入；
+ *         目前是编译期常量（24 格 = 480 ms / 1 格 = 20 ms），一起上报是为了留痕 ——
+ *         以后若改成按检测延迟自适应，PC 端能直接看见它变。
+ *
+ * ★ 全链门控一览（每条牵引/融合一个专用外部门控，一一对应，全部上报）：
+ *     环                        门字段                      上报
+ *     ------------------------  --------------------------  -----
+ *     处理函数 1 陀螺零偏牵引    is_static                   9
+ *     处理函数 3 重力/倾斜融合   att_tilt                    42
+ *     处理函数 4 加速度零偏牵引  acc_traction                11
+ *     处理函数 6 速度(软 ZUPT)   vel_soft（0..255 连续置信度） 45
+ *     ------------------------  --------------------------  -----
+ *     磁力计样本有效性（非牵引） mag.ok（0/1，外部磁源污染）   54
+ *
+ * ★ 1~19 一个都不动、新量全部追加在后面：已有分析脚本与历史记录按列号取值，
+ *   追加而不插队，旧列号含义完全不变（jf_load.py 按帧长自动识别通道数，不用改）。
+ * ★ 带宽：19 路 80 B = 642 kB/s；31 路 128 B = 1.03 MB/s；45 路 184 B = 1.48 MB/s；
+ *   48 路 196 B = 1.57 MB/s（追加地磁原始 3 路）；49 路 200 B = 1.60 MB/s
+ *   （再追加磁样本序号）；★ 54 路 220 B = 1.77 MB/s（再追加校准后地磁 5 路）。
+ *   上行是 USBHS CDC bulk EP2（HS 512 B/包，8 KB 环形缓冲 = 4.6 ms 余量）。
+ *   HS bulk 理论上限 53 MB/s，1.77 MB/s 占用 3.3%，余量充足。
+ *
+ * ★ 为什么要发这些：链里有多个 0/1 门（陀螺零偏追踪门 / 加速度零偏追踪门），
+ *   只发姿态+速度时无法区分"门没开"和"门开了但没效果"，排查只能靠猜。
+ *
+ * 为什么发姿态与速度：它们正是飞控闭环需要的两个量 —— 姿态环（陀螺积分 + 竖直持续修正
+ * + 静止牵引）与速度环（比力积分 + 自行向 0 衰减）。位置是速度的二次积分、
+ * 误差跨锚点累积，本固件不出位置，所以也不上报位置。
+ *
+ * 帧尾是上位机(VOFA+ JustFloat)的切帧标志，必须在；全 float 结构，
+ * 不加包头/长度/校验等任何非 float 字段，否则上位机解析不了。
+ * RISC-V 小端，float 按字节直拷即 IEEE754 小端，无字节序换算。
+ * ★ 改通道数必须同步改上位机解析（tools/calib/jf_load.py 按帧长自动识别，不用改）。 */
+/* ---- 46~48 追加：IST8310 地磁原始 LSB（0.3 uT/LSB，16 位补码）----
+ * 为什么要上报：磁是唯一能给**绝对航向**的传感器，而机上硬铁/软铁必须在 PC 端用
+ *   "多姿态静态点拟合椭球"来标定（工具链已有同款做法：tools/calib/accel_ellipse_cal.py
+ *   就是拿原始 LSB 拟合椭圆心/半轴）。没有原始 LSB 就没法标，只能看到已被污染的航向。
+ * 更新率：IST8310 是**单次测量**（i2c_soft.c 写 0x0A=0x01），由 V3F 主循环每次触发一次，
+ *   约 180~200 Hz —— 所以 8 kHz 上报里相邻帧重复属正常，不是丢数据。
+ * 磁不参与任何牵引/融合环，所以没有"牵引门"；但它有**样本有效性门**（见 54）。
+ *   49    IST8310 样本序号（= 共享区 ist 通道的 cnt，单调递增）。
+ *         ★ 磁只有 ~180 Hz，且**只有变化沿有效** —— 中间约 45 帧是同一值的重复。
+ *         只报 46~48 的话，"相邻两拍数值恰好相同"会被误判成没有新样本：实测
+ *         1 LSB 分辨率 / 0.77 LSB 噪声下会漏掉约 2% 的沿，把 180 Hz 读成 176.4 Hz。
+ *         报序号就永不漏沿，而且序号跳 >1 直接说明共享区那侧丢了样本。
+ *         注：float32 精确表示 < 2^24 的整数，180 Hz 下约 25.8 小时后才会按 2 递增。
+ * ★ 1~48 列号一个都不动，新量只追加在尾部。
+ *
+ * ---- 50~54 追加：校准后的地磁单位方向 + 污染门（v5f_tune.h H 组的标定输出）----
+ *   50~52 mag.f[3] —— y = V5F_MAG_A * raw + V5F_MAG_C，**已归一化**。
+ *         机体坐标系，指向磁北且向下；导航系 x=右 y=前 z=上。
+ *   ★ 这是**唯一能给绝对航向的量**：PC 端 atan2(f[0], f[1]) 即磁航向，
+ *     不必自己重跑标定；同时它也是"固件里的标定到底有没有生效"的唯一证据
+ *     （对照 V5F_MAG_CAL_EN=0 的直通录制即可 A/B）。
+ *   53    mag.mag_norm —— 归一化**前**的模长，理论 1.0。
+ *         ★ 它同时是**标定质量的独立读数**：地磁强度是地点常数，标定对了它就
+ *         恒为 1，离散度直接反映剩余畘变。实测干净会话离散 2.0~4.8%，桌面污染
+ *         会话 6.1~6.7%，整段被外部磁源覆盖时可达 1.4~2.9。
+ *         它也把"是磁力计坏了还是环境坏了"分开：|y| 偏但方向对 = 环境；
+ *         方向也乱 = 磁力计或标定。
+ *   54    mag.ok —— 样本有效性门（0/1）。链里每个 0/1 门都上报，这条同样不外。
+ *         注意它是**有效性门**而非牵引门：磁不参与任何融合环。
+ * ★ 1~49 列号一个都不动，新量只追加在尾部。 */
+#define JF_CH_NUM     54u
+#define JF_FRAME_LEN  (JF_CH_NUM * 4u + 4u)      /* 220 */
+
+
+static void justfloat_report(void)
+{
+    float   ch[JF_CH_NUM];
+    uint8_t buf[JF_FRAME_LEN];
+    uint8_t i;
+
+    for (i = 0u; i < 4u; i++) ch[i]     = g_v5f_hold.att.q[i];
+    for (i = 0u; i < 3u; i++) ch[4u + i] = g_v5f_hold.vel.v_nav[i];
+
+    ch[7]  = g_v5f_hold.stat.level_dps;            /* 陀螺侧门控的输入 */
+    ch[8]  = (float)g_v5f_hold.stat.is_static;     /* 速度归零门 + 陀螺零偏追踪门 */
+    ch[9]  = (float)g_v5f_hold.imu.acc_trust;      /* 速度归零门第二条件 */
+    ch[10] = (float)g_v5f_proc_gate.acc_traction;  /* 加速度零偏追踪门 */
+    for (i = 0u; i < 3u; i++) ch[11u + i] = g_v5f_hold.imu.a_lin[i];        /* 牵引驱动量 */
+    for (i = 0u; i < 3u; i++) ch[14u + i] = g_v5f_hold.imu.accel_bias_g[i]; /* 牵引零偏估计 */
+
+    /* 打包标志位（bit 序号即权重；float 精确表示 < 2^24） */
+    {
+        uint32_t f = 0u;
+        if (g_v5f_hold.imu.bias_ok    != 0u) f |= 1u << 0;
+        if (g_v5f_hold.att.up_ref_ok  != 0u) f |= 1u << 1;
+        if (g_v5f_hold.att.valid      != 0u) f |= 1u << 2;
+        if (g_v5f_hold.vel.valid      != 0u) f |= 1u << 3;
+        if (g_v5f_hold.imu.corr_valid != 0u) f |= 1u << 4;
+        if (g_v5f_hold.imu.acc_valid  != 0u) f |= 1u << 5;
+        if (g_v5f_hold.stat.valid     != 0u) f |= 1u << 6;
+        if (g_v5f_hold.stat.changed   != 0u) f |= 1u << 7;
+        if ((g_v5f_hold.imu.corr_flags & V5F_GYRO_CORR_FLAG_ROLLBACK) != 0u) f |= 1u << 8;
+        if ((g_v5f_hold.imu.acc_traction_flags & V5F_ACC_TRACTION_FLAG_ROLLBACK) != 0u) f |= 1u << 9;
+        ch[17] = (float)f;
+    }
+
+    ch[18] = (float)s_dma1_irq_us;       /* 上一帧 DMA1 ISR 耗时 us（见上方说明） */
+
+    /* 20~22 陀螺原始 LSB（主传感器，排在最前） */
+    for (i = 0u; i < 3u; i++) ch[19u + i] = (float)g_v5f_hold.imu.gyro_lsb[i];
+    /* 23~25 加速度原始 LSB */
+    for (i = 0u; i < 3u; i++) ch[22u + i] = (float)g_v5f_hold.imu.accel_lsb[i];
+    /* 26 陀螺温度 */
+    ch[25] = g_v5f_hold.imu.temp_celsius;
+    /* 27 当帧 DRDY 间隔（us）：1 tick = 10 ns，故 * 1e-2 得 us */
+    {
+        uint64_t tk = g_v5f_hold.imu.fresh.drdy_tick;
+        if (s_rep_tick_ok == 0u) {
+            ch[26] = 0.0f;                       /* 首帧：还没有基准 */
+            s_rep_tick_ok = 1u;
+        } else if (tk >= s_rep_last_tick) {
+            ch[26] = (float)(tk - s_rep_last_tick) * 1e-2f;
+        } else {
+            ch[26] = 0.0f;                       /* 时间戳回退 */
+        }
+        s_rep_last_tick = tk;
+    }
+    /* 28 速度可信窗口 */
+    ch[27] = g_v5f_hold.vel.age_s;
+    /* 29~31 世界竖直参考（去重力基准） */
+    for (i = 0u; i < 3u; i++) ch[28u + i] = g_v5f_hold.att.up_ref[i];
+
+    /* 32~34 零偏校正后的角速度（处理函数 2/3 真正的输入） */
+    for (i = 0u; i < 3u; i++) ch[31u + i] = g_v5f_hold.imu.gyro_dps[i];
+    /* 35~37 陀螺零偏估计本身（内部状态，别处推不出来） */
+    for (i = 0u; i < 3u; i++) ch[34u + i] = g_v5f_hold.imu.gyro_bias_dps[i];
+    /* 38~40 用牵引后零偏重算的比力（与 a_lin 差一步 PI 更新） */
+    for (i = 0u; i < 3u; i++) ch[37u + i] = g_v5f_hold.imu.accel_g[i];
+    /* 41 累积静止证据（= 判静阈值表的索引） */
+    ch[40] = (float)g_v5f_hold.imu.bias_evidence_gran;
+    /* 42 重力/倾斜融合门（处理函数 3 用；与 11 的 acc_traction 是两个不同的门） */
+    ch[41] = (float)g_v5f_proc_gate.att_tilt;
+    /* 43~44 两个门各自的回退粒度（门的输出参数，一起留痕） */
+    ch[42] = (float)g_v5f_proc_gate.rollback_granules;
+    ch[43] = (float)g_v5f_proc_gate.acc_rollback_granules;
+    /* 45 速度的软 ZUPT 置信度（0..255；除以 255 就是 lam） */
+    ch[44] = (float)g_v5f_proc_gate.vel_soft;
+    /* 46~48 IST8310 地磁原始 LSB（0.3 uT/LSB，16 位补码；~200 Hz 更新，
+     * 故相邻帧重复属正常）。供 PC 端做硬铁/软铁标定与航向复核。 */
+    for (i = 0u; i < 3u; i++) ch[45u + i] = (float)g_v5f_hold.mag.lsb[i];
+    /* 49 IST8310 样本序号（共享区 ist 通道 cnt）—— 见上方说明：磁只有 ~180 Hz，
+     * 只有变化沿有效，只报数值会漏沿。序号变了即新样本；跳 >1 = 丢了样本。 */
+    ch[48] = (float)g_shm->ist.hdr.cnt;
+
+    /* 50~52 校准后的地磁单位方向（机体坐标系，指向磁北且向下；导航系 右/前/上）。
+     * 倾斜补偿后 atan2(f[0], f[1]) 直接就是磁航向，再加磁偏角即真航向。
+     * ★ 已是单位矢量（hold_poll 里归一化过），消费方不必再除模长。 */
+    for (i = 0u; i < 3u; i++) ch[49u + i] = g_v5f_hold.mag.f[i];
+    /* 53 归一化**前**的模长（理论 1.0）—— 污染门的观测量，
+     *    也是标定质量的独立读数：地磁强度是常数，标定对了它就恒为 1。 */
+    ch[52] = g_v5f_hold.mag.mag_norm;
+    /* 54 磁样本有效性门（1 = 未被外部磁源污染）—— 见上方门控一览。 */
+    ch[53] = (float)g_v5f_hold.mag.ok;
+
+    memcpy(buf, ch, sizeof(ch));
+
+    buf[JF_FRAME_LEN - 4u] = 0x00u;
+    buf[JF_FRAME_LEN - 3u] = 0x00u;
+    buf[JF_FRAME_LEN - 2u] = 0x80u;
+    buf[JF_FRAME_LEN - 1u] = 0x7Fu;
+
+    hid_up_enqueue(buf, JF_FRAME_LEN);   /* 空间不足时整帧丢弃，不会写出半帧 */
+}
+
+/* ==================== DMA 中断服务函数：只负责调度分配 ==================== */
+void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void DMA1_Channel2_IRQHandler(void)
+{
+    if (DMA_GetITStatus(DMA1, DMA1_IT_TC2)) {
+        DMA_ClearITPendingBit(DMA1, DMA1_IT_TC2);
+        if (g_shm) {
+            uint64_t isr_t0 = GetTime64_Us();   /* ISR 计时起点 */
+
+            /* SPI 帧解析（温度 + 六轴）→ 保持器（DRDY 时刻由 hold_poll 搬入） */
+            g_v5f_hold.imu.temp_celsius = (int16_t)((rxfifo[1] << 8) | rxfifo[2]) / 132.48f + 25.0f;
+            g_v5f_hold.imu.gyro_lsb[0]  = (int16_t)((rxfifo[9]  << 8) | rxfifo[10]);
+            g_v5f_hold.imu.gyro_lsb[1]  = (int16_t)((rxfifo[11] << 8) | rxfifo[12]);
+            g_v5f_hold.imu.gyro_lsb[2]  = (int16_t)((rxfifo[13] << 8) | rxfifo[14]);
+            g_v5f_hold.imu.accel_lsb[0] = (int16_t)((rxfifo[3]  << 8) | rxfifo[4]);
+            g_v5f_hold.imu.accel_lsb[1] = (int16_t)((rxfifo[5]  << 8) | rxfifo[6]);
+            g_v5f_hold.imu.accel_lsb[2] = (int16_t)((rxfifo[7]  << 8) | rxfifo[8]);
+            hold_poll();
+            g_v5f_hold.imu.fresh.new_data = 1;  /* 所有字段写完后才置新数据信号 */
+
+            /* 主任务区开始 */
+
+            /* 处理链：依次调用，每个处理函数把结果直接写回 g_v5f_hold；
+             * 返回非 0 只锁存错误码，不打断后续处理函数（结果字段的有效性由各函数自己置）。 */
+            {
+                uint8_t st = v5f_proc_gyro_bias(&g_v5f_hold, &g_v5f_proc_gate);
+                if (st != V5F_PROC_OK) s_proc_err_gyro_bias = st;
+
+                /* 第二步：动静判定 —— 吃本帧的校正输出，写下一帧的门控 */
+                st = v5f_proc_static_detect(&g_v5f_hold, &g_v5f_proc_gate);
+                if (st != V5F_PROC_OK) s_proc_err_static = st;
+
+                /* 第三步：姿态四元数 —— 吃本帧的补偿输出（零偏 + 逐轴标度已载入） */
+                st = v5f_proc_attitude(&g_v5f_hold, &g_v5f_proc_gate);
+                if (st != V5F_PROC_OK) s_proc_err_attitude = st;
+
+                /* 第四步：加速度计标定 —— 牵引/冻结由**外部门控**决定（读上一帧的判定） */
+                st = v5f_proc_accel_cal(&g_v5f_hold, &g_v5f_proc_gate);
+                if (st != V5F_PROC_OK) s_proc_err_accel_cal = st;
+
+                /* 第五步：加速度牵引的外部门控 —— 用本帧零偏校准后的原始值判别
+                 *        牵引/冻结，写入 gate，作用于**下一帧**的第 4 步
+                 *        （与第 2 步写 -> 第 1 步下一帧读 完全同构） */
+                st = v5f_proc_acc_gate(&g_v5f_hold, &g_v5f_proc_gate);
+                if (st != V5F_PROC_OK) s_proc_err_acc_gate = st;
+
+                /* 第六步：世界系速度 —— 吃第 3 步的姿态与第 4 步的比力 */
+                st = v5f_proc_velocity(&g_v5f_hold, &g_v5f_proc_gate);
+                if (st != V5F_PROC_OK) s_proc_err_velocity = st;
+            }
+
+            /* 上报：组 1 帧 JustFloat 交给 CDC 上行环，主循环负责灌 EP2 */
+            justfloat_report();
+
+            /* 主任务区结束 */
+
+            /* -------- 重新触发 DMA 接收 -------- */
+            GPIO_SetBits(GPIOF, GPIO_Pin_4);
+            DMA_Cmd(DMA1_Channel2, DISABLE);
+            DMA1_Channel2->CNTR = 15;
+            DMA_Cmd(DMA1_Channel2, ENABLE);
+
+            /* 记录本次 ISR 用时的历史最劣(最大)值，us */
+            uint32_t d = (uint32_t)(GetTime64_Us() - isr_t0);
+            s_dma1_irq_us = d;           /* 下一帧上报它 */
+        }
+    }
+}
+
+/* ==================== DMA 初始化函数 ==================== */
+void SPI_DMA_Init(void)
+{
+    RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
+    SPI1_DMA_Rx_Setup((uint8_t*)rxfifo, 15);
+
+    NVIC_SetAllocateIRQ(DMA1_Channel2_IRQn, Core_ID_V5F);
+    NVIC_SetPriority(DMA1_Channel2_IRQn, 0<<5);
+    NVIC_EnableIRQ(DMA1_Channel2_IRQn);
+}

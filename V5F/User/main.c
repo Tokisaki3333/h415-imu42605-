@@ -46,6 +46,30 @@ int main(void)
     {
         usbhs_hid_poll();               /* 上行环有字节就灌 1 个 EP2 包 */
 
+        /* ---- FireWater（VOFA+ 文本协议）：20 Hz 输出四元数供检查 ----
+         * 放在主循环、**不放中断**：printf 是阻塞式的，115200 baud 下一行约 6 ms，
+         * 丢进 8 kHz 的 DMA 中断会直接毁掉时间轴。
+         * 8 路：ekf_qw,qx,qy,qz, att_qw,qx,qy,qz（逗号分隔，\n 结束）
+         * ★ ekf_q 的导航系是真 ENU（磁力计一次性对齐），att_q 是上电时 x 轴的水平
+         *   投影，两者只差一个绕竖直轴的**固定旋转**（实测 = -D = +7.53 度）。
+         *   直接比分量会看到固定偏航差，那不是误差；比精度请比转角的变化量。
+         * ★ 阻塞打印期间主循环无法灌 EP2，上行环只有约 2 ms 余量 —— 若发现 HID
+         *   采集掉帧，先把这里的输出降到 10 Hz 或把调试串口波特率提高。 */
+        {
+            static uint64_t s_fw_last;
+            uint64_t fw_tv = GetTime64_Us();
+            if (fw_tv - s_fw_last >= 50000ULL)      /* 20 Hz */
+            {
+                s_fw_last = fw_tv;
+                printf("%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                       (double)g_v5f_hold.ekf.q[0], (double)g_v5f_hold.ekf.q[1],
+                       (double)g_v5f_hold.ekf.q[2], (double)g_v5f_hold.ekf.q[3],
+                       (double)g_v5f_hold.att.q[0], (double)g_v5f_hold.att.q[1],
+                       (double)g_v5f_hold.att.q[2], (double)g_v5f_hold.att.q[3]);
+                usbhs_hid_poll();                   /* 打印前后各灌一次，尽量少压上行环 */
+            }
+        }
+
         // tim = GetTime64_Us();
         // if(tim - last_print_tim > 50000)
         // {

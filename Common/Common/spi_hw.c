@@ -207,37 +207,6 @@ void SPI_WriteReg(uint8_t reg, uint8_t data)
     spi_busy_wait();                                  /* t_CSN_HIGH */
 }
 
-void icm52605_Init(void)
-{
-    GPIO_InitTypeDef g = {0};
-    EXTI_InitTypeDef e = {0};
-
-    RCC_HB2PeriphClockCmd(RCC_HB2Periph_SPI1, ENABLE);
-    RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
-    
-    /* PE0 = INT1(DRDY) 输入 + EXTI 上升沿（先配引脚；中断使能在等大核就绪后）*/
-    RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO | RCC_HB2Periph_GPIOE, ENABLE);
-    g.GPIO_Pin   = GPIO_Pin_0;
-    g.GPIO_Speed = GPIO_Speed_Very_High;
-    g.GPIO_Mode  = GPIO_Mode_IPU;
-    GPIO_Init(GPIOE, &g);
-    GPIO_EXTILineConfig(GPIO_PortSourceGPIOE, GPIO_PinSource0);
-    e.EXTI_Line    = EXTI_Line0;
-    e.EXTI_Mode    = EXTI_Mode_Interrupt;
-    e.EXTI_Trigger = EXTI_Trigger_Rising;
-    e.EXTI_LineCmd = ENABLE;
-    EXTI_Init(&e);
-
-    /* 初始化序列（手册）：先使能 G+A Low Noise，转换后 200us 不写寄存器，等 gyro 启动 45ms */
-    SPI_WriteReg(0x4E, 0x0F);   /* PWR_MGMT0：GYRO_MODE=11(LN) + ACCEL_MODE=11(LN) */
-    Delay_Ms(50);               /* 等 gyro 启动（≥45ms）*/
-    SPI_WriteReg(0x4F, 0x43);   /* GYRO_CONFIG0：FS=±500dps(010) + GYRO_ODR=8kHz(0011) */
-    SPI_WriteReg(0x50, 0x43);   /* ACCEL_CONFIG0：FS=±4g(010) + ACCEL_ODR=8kHz(0011) */
-    SPI_WriteReg(0x14, 0x03);   /* INT_CONFIG：INT1 推挽输出 + 高有效 */
-    SPI_WriteReg(0x64, 0x60);   /* INT_CONFIG1：INT_ASYNC_RESET=0 + TPULSE=1(8us, ODR≥4kHz) + TDEASSERT_DISABLE=1 */
-    SPI_WriteReg(0x65, 0x08);   /* INT_SOURCE0：UI_DRDY_INT1_EN=1（DRDY 路由 INT1）*/
-    return;
-}
 void icm52605_Init_A(void)
 {
     GPIO_InitTypeDef g = {0};
@@ -263,10 +232,20 @@ void icm52605_Init_A(void)
     SPI_WriteReg(0x4E, 0x0F);   /* PWR_MGMT0：GYRO_MODE=11(LN) + ACCEL_MODE=11(LN) */
     return;
 }
+/* icm52605_Init_B：量程 + ODR + DRDY 中断（V3F main 在 Init_A 之后调用）
+ *
+ * ★ 量程改了必须同步改下游：上位机换算、六面标定解出的标度/零偏都是按下面的
+ *   LSB 刻度算的，对不上就是静默失效。
+ *   GYRO_CONFIG0  (0x4F) = 0x03 : GYRO_FS_SEL=000 -> ±2000 dps = 16.384 LSB/dps
+ *   ACCEL_CONFIG0 (0x50) = 0x03 : ACCEL_FS_SEL=000 -> ±16  g   = 2048  LSB/g
+ *                                 （1 LSB = 488.3 ug = 4.7889e-3 m/s^2）
+ *   两处 ODR 都是 0011 = 8 kHz。
+ *   历史坑：0x4F 曾写成 0x43(=±500dps) 而注释没改；0x50 曾为 0x43(=±4g)。
+ *   改量程后 gyro_FS=001(±1000)/010(±500)/011(±250)... 逐档差 2 倍，别手滑。 */
 void icm52605_Init_B(void)
 {
-    SPI_WriteReg(0x4F, 0x03);   /* GYRO_CONFIG0：FS=±500dps(010) + GYRO_ODR=8kHz(0011) */
-    SPI_WriteReg(0x50, 0x43);   /* ACCEL_CONFIG0：FS=±4g(010) + ACCEL_ODR=8kHz(0011) */
+    SPI_WriteReg(0x4F, 0x03);   /* GYRO_CONFIG0：GYRO_FS_SEL=000(±2000dps) + GYRO_ODR=0011(8kHz) */
+    SPI_WriteReg(0x50, 0x03);   /* ACCEL_CONFIG0：ACCEL_FS_SEL=000(±16g)  + ACCEL_ODR=0011(8kHz) */
     SPI_WriteReg(0x14, 0x03);   /* INT_CONFIG：INT1 推挽输出 + 高有效 */
     SPI_WriteReg(0x64, 0x60);   /* INT_CONFIG1：INT_ASYNC_RESET=0 + TPULSE=1(8us, ODR≥4kHz) + TDEASSERT_DISABLE=1 */
     SPI_WriteReg(0x65, 0x08);   /* INT_SOURCE0：UI_DRDY_INT1_EN=1（DRDY 路由 INT1）*/

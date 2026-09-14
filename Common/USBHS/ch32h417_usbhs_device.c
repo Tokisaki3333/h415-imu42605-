@@ -762,6 +762,8 @@ void USBHS_IRQHandler(void)
                 break;
             /* end-point 2 data-out interrupt(CDC bulk OUT:本设计纯单向,来数据即 ACK 丢弃) */
             case DEF_UEP2:
+                /* 下行：主机→设备 bulk OUT。中断里只入环、不解析（与上行同纪律） */
+                hid_down_push((const uint8_t *)USBHS_EP2_Rx_Buf, (uint16_t)USBHSD->UEP2_RX_LEN);
                 USBHSD->UEP2_RX_CTRL &= ~USBHS_UEP_R_DONE;
                 if(USBHSD->UEP2_RX_CTRL & USBHS_UEP_R_TOG_MATCH)
                 {

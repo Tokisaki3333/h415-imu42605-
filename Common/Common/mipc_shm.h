@@ -32,11 +32,14 @@ typedef struct {
 #define SHM_RMC_POS      0x02u   /* 经纬度存在 */
 #define SHM_RMC_SPEED    0x04u   /* 对地速度存在 */
 #define SHM_RMC_DATE     0x08u   /* 日期存在 */
+#define SHM_RMC_COURSE   0x10u   /* 对地航向（RMC 字段 8）存在 */
+#define SHM_RMC_MAGVAR   0x20u   /* 磁偏角（RMC 字段 10/11，接收机自带 WMM）存在 */
 #define SHM_GGA_QUALITY  0x01u   /* 定位质量存在 */
 #define SHM_GGA_SV       0x02u   /* 卫星数存在 */
 #define SHM_GGA_HDOP     0x04u   /* HDOP 存在 */
 #define SHM_GGA_ALT      0x08u   /* 海拔存在 */
 #define SHM_GSA_DOP      0x01u   /* PDOP/VDOP 存在 */
+#define SHM_GSV_SNR      0x01u   /* C/N0 统计存在（GSV） */
 
 /* ---- 陀螺仪（ICM-42605）：只有 DRDY 时间戳；六轴原始值走 SPI_rx DMA 帧 ---- */
 typedef struct {
@@ -56,7 +59,7 @@ typedef struct {
     volatile float press_pascal;        /* Pa */
 } bmp_chan_t;                           /* 20 B */
 
-/* ---- GPS RMC：定位 / 速度 / 日期 ----
+/* ---- GPS RMC：定位 / 速度 / 航向 / 磁偏角 / 日期 ----
  * 三态判读：无 SHM_RMC_STATUS → 未启动/无语句；status=='V' → 有信号无定位；'A' → 定位有效。 */
 typedef struct {
     chan_hdr_t hdr;                     /* 12 B */
@@ -67,7 +70,14 @@ typedef struct {
     volatile int32_t  lat_e7;           /* 纬度 ×1e7 度（1 LSB = 10^-7°，南纬为负）；float 精度不够，必须定点 */
     volatile int32_t  lon_e7;           /* 经度 ×1e7 度（西经为负） */
     volatile uint32_t date_ddmmyy;      /* UTC 日期 ddmmyy（十进制字面量） */
-} gps_rmc_chan_t;                       /* 32 B，无空洞 */
+    volatile float    course_deg;       /* 对地航向（真北，0~360 度），RMC 字段 8。
+                                         * ★ EKF 要的是速度**矢量**，靠 speed_mps + course_deg 才组得出来；
+                                         * 只给标量速度只能约束一个方向。无此语句时值为 0 且无 SHM_RMC_COURSE。 */
+    volatile float    magvar_deg;       /* 接收机自报的磁偏角（东正西负），RMC 字段 10/11。
+                                         * ★ 这是**接收机内部 WMM** 的值，可与我们离线查的 WMM 互校
+                                         * （本机离线值 -7.53 度）。不要与 course 混用：
+                                         * course 是航向（相对真北），magvar 是磁北相对真北的偏角。 */
+} gps_rmc_chan_t;                       /* 40 B，无空洞 */
 
 /* ---- GPS GGA：定位质量 / 卫星数 / HDOP / 海拔 ---- */
 typedef struct {
@@ -90,6 +100,25 @@ typedef struct {
     volatile uint16_t _rsv1;
 } gps_gsa_chan_t;                       /* 20 B */
 
+/* ---- GPS GSV：C/N0（载噪比）统计 ----
+ * ★ 为什么要它：静止实测 HDOP 1.00 + DGPS + 21 星，水平误差仍 3.95 m
+ *   （反推 UERE 3.9 m，健康 DGPS 应 0.5~1 m）。只剩两种可能：
+ *   ① 信号弱（天线/馈线/遮挡/干扰）② 伪距被多径污染。C/N0 一眼可分：
+ *   平均 <35 dBHz 或最低 <25 -> 信号弱；>40 却仍差 -> 多径。
+ * ★ 每个 GSV 轮次（多条消息）只在**最后一条**发布一次，所以统计是整轮的。 */
+typedef struct {
+    chan_hdr_t hdr;                     /* 12 B */
+    volatile uint8_t  flags;
+    volatile uint8_t  sats_view;        /* 视野内卫星数（GSV 字段 3） */
+    volatile uint8_t  snr_n;            /* 有有效 C/N0 的卫星数 */
+    volatile uint8_t  snr_min;          /* 最小 C/N0，dBHz（0 = 无） */
+    volatile uint16_t snr_avg_x10;      /* 平均 C/N0 ×10，dBHz */
+    volatile uint8_t  talkers;          /* 本轮出现的 talker 数（1 = 只有合并报文）：
+                                         * 用来验证轮次聚合是否正常。实测一个轮次
+                                         * 有 4 个 talker（sats_view 取自 {2,3,10,11}） */
+    volatile uint8_t  _rsv0;
+} gps_gsv_chan_t;                       /* 20 B */                       /* 20 B */
+
 /* ---- 低频文本通道（mipc_v3_printf，每秒一帧） ---- */
 typedef struct {
     volatile uint32_t cnt;
@@ -107,6 +136,7 @@ typedef struct {
     gps_rmc_chan_t    gps_rmc;
     gps_gga_chan_t    gps_gga;
     gps_gsa_chan_t    gps_gsa;
+    gps_gsv_chan_t    gps_gsv;
     /* OLED 显存：128×64/8 = 1024 B，页主序 8 页 × 128 列；双核可读写，aligned(4) 便于双核/DMA 访问 */
     volatile uint8_t  oled_fb[1024] __attribute__((aligned(4)));
 } shared_mem_t;

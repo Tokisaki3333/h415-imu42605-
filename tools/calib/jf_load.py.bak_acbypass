@@ -1,0 +1,172 @@
+# -*- coding: utf-8 -*-
+"""
+JustFloat 串口日志的公共读取器（流式 + npy 缓存）
+
+为什么需要它：日志是文本，单条记录 25~48 MB。原先的写法
+    raw = b''.join(bytes.fromhex(...) for ... in re.findall(pat, open(fn).read()))
+会把整份文件读成一个 Python str、再由 findall 造出几十万个小字符串，
+峰值内存几百 MB，而且每跑一次脚本就把大文件重读一遍（Defender 还要再扫一遍）
+—— 分析脚本反复跑就会看到上百 MiB 的磁盘读。
+本模块按块流式解析，峰值只有输出数组那么大（几十 MB），并把结果缓存成
+`<日志>.npy`，重跑只读 11 MB 的二进制缓存。.npy 已在 .gitignore 里。
+
+帧格式：JustFloat N 通道 float + 4 字节帧尾 00 00 80 7F，全是 float。
+        **N 由固件决定，本模块按帧长自动识别**，所以新旧记录都能读。历史/当前：
+          4  = 四元数
+          7  = 四元数 + 世界系速度
+          10 = 四元数 + 速度 + 加速度原始 LSB
+          18 = 四元数 + 速度 + 判静统计量 + 三个门状态 + 牵引驱动量 a_lin
+               + 加速度零偏估计 + 打包标志位
+          19 = 18 路 + DMA1 中断耗时历史最大值 us
+          49 = 19 路 + 陀螺原始 LSB + 加速度原始 LSB + 温度 + dt + vel.age_s
+               + up_ref + gyro_dps + gyro_bias_dps + accel_g + 证据粒度
+               + 三个门/回退 + vel_soft + 地磁原始 LSB + IST8310 样本序号
+          54 = 49 路 + **校准后的地磁单位方向 f[3]** + |y| + mag.ok
+          60 = 54 路 + **磁力计的偏航维度输出**：Bw[3] + psi_deg + psi_true_deg
+               + mag.trust（当前固件；见 V5F/User/src/SPI_rx.c 的通道说明）
+        49 通道 = 200 字节 = 300 个十六进制字符（去空格）
+        54 通道 = 220 字节 = 330 个十六进制字符（去空格）
+        60 通道 = 244 字节 = 366 个十六进制字符（去空格）
+        78 通道 = 316 字节 = 474 个十六进制字符（去空格）
+        80 通道 = 324 字节 = 486 个十六进制字符（去空格）
+        84 通道 = 340 字节 = 510 个十六进制字符（去空格）
+        90 通道 = 364 字节 = 546 个十六进制字符（去空格）
+
+列名映射见下面的 CH 字典（0 基）。用它取值，不要在各脚本里硬写列号：
+    a = jf_load.load_jf(fn);  t = a[:, jf_load.CH['gps_lat']]
+低速率通道（GPS 1~10 Hz、气压计 ~180 Hz、磁力计 ~187 Hz）在上报里是重复的，
+取新样本用 edges_of()，它同时返回丢包数。
+"""
+import binascii
+import os
+import numpy as np
+
+# ---- 78 通道布局的列名映射（0 基）。逐条依据见 V5F/User/src/SPI_rx.c 的通道说明 ----
+CH = {
+    'q': 0, 'v_nav': 4, 'level_dps': 7, 'is_static': 8, 'acc_trust': 9,
+    'acc_traction': 10, 'a_lin': 11, 'accel_bias_g': 14, 'flags': 17,
+    'dma1_irq_us': 18, 'gyro_lsb': 19, 'accel_lsb': 22, 'temp_imu': 25,
+    'dt_us': 26, 'vel_age_s': 27, 'up_ref': 28, 'gyro_dps': 31,
+    'gyro_bias_dps': 34, 'accel_g': 37, 'bias_evidence_gran': 40,
+    'att_tilt': 41, 'rollback_granules': 42, 'acc_rollback_granules': 43,
+    'vel_soft': 44, 'mag_lsb': 45, 'ist_cnt': 48,
+    'mag_f': 49, 'mag_norm': 52, 'mag_ok': 53,
+    'mag_Bw': 54, 'psi_mag': 57, 'psi_true': 58, 'mag_trust': 59,
+    'baro_press': 60, 'baro_temp': 61, 'baro_cnt': 62,
+    'gps_status': 63, 'gps_lat': 64, 'gps_lon': 65, 'gps_speed': 66,
+    'gps_rmc_flags': 67, 'gps_rmc_cnt': 68,
+    'gps_alt': 69, 'gps_fixq': 70, 'gps_sv': 71, 'gps_hdop': 72,
+    'gps_gga_flags': 73, 'gps_gga_cnt': 74,
+    'gps_pdop': 75, 'gps_vdop': 76, 'gps_gsa_cnt': 77,
+    'gps_course': 78, 'gps_magvar': 79,
+    # C/N0 统计（GSV）：把"信号弱"和"多径"分开
+    'gps_sats_view': 84, 'gps_snr_avg': 85, 'gps_snr_min': 86,
+    'gps_snr_n': 87, 'gps_gsv_cnt': 88,
+    'baro_press_avg': 89,   # 软件 OSR 平均后的压力（V5F_BARO_AVG_W 个样本滑动均值）
+    # 经纬度的精确形式（追加）。64/65 是便利的单列度值（有 ~0.42 m 量化），
+    # 精确重建请用 lat_deg()/lon_deg()，它们用 80~83 这两对 int+frac。
+    'gps_lat_int': 80, 'gps_lat_frac': 81,
+    'gps_lon_int': 82, 'gps_lon_frac': 83,
+}
+
+
+def lat_deg(a):
+    """用 81/82 两路无损重建纬度（度）。负纬度也成立（C 整除向零截断）。"""
+    return a[:, CH['gps_lat_int']].astype(np.float64) + \
+           a[:, CH['gps_lat_frac']].astype(np.float64) * 1e-7
+
+
+def lon_deg(a):
+    """用 83/84 两路无损重建经度（度）。"""
+    return a[:, CH['gps_lon_int']].astype(np.float64) + \
+           a[:, CH['gps_lon_frac']].astype(np.float64) * 1e-7
+
+
+def edges_of(cnt_col):
+    """给定某一路"样本序号"列的整列值，返回 (新样本出现的帧下标, 丢样本总数)。
+    序号跳 >1 即上游丢了样本，这里把它累加出来。"""
+    c = np.asarray(cnt_col)
+    d = np.diff(c)
+    idx = np.where(d > 0)[0] + 1
+    return idx, int(np.sum(d[d > 0] - 1))
+
+PAT = b'[RX] '
+NBYTES = 80          # 默认值：当前固件 19 float + 4 字节帧尾（实际按首行自动识别）
+HEXLEN = NBYTES * 3 - 1   # "XX ... XX" 共 239 个字符
+HEXCHR = NBYTES * 2       # 去空格后 160 个十六进制字符
+NCH = 19
+
+
+def load_jf(fn, cache=True, verbose=False):
+    """返回 (N, NCH_declared) float32。列含义随固件版本而变：
+       7 通道 = q[4] + 加速度原始 LSB[3]
+      10 通道 = q[4] + 加速度原始 LSB[3] + 陀螺原始 LSB[3]
+    帧长**自动识别**（从第一条数据行的十六进制字段长度推出），所以新旧记录都能读。"""
+    npy = fn + '.npy'
+    # 缓存比源文件新就用缓存。★ 也允许源 .txt 已经被清理掉 —— 日志目录会轮转，
+    #   而 .npy 是分析用的二进制快照，应当能独立存活（实测 .txt 被清空后只剩 .npy）。
+    if cache and os.path.exists(npy) and (
+            not os.path.exists(fn) or os.path.getmtime(npy) > os.path.getmtime(fn)):
+        a = np.load(npy)
+        if verbose:
+            print("  [jf_load] 命中缓存 %s  %s" % (os.path.basename(npy), a.shape))
+        return a
+
+    # 先探数据行，定出本文件的帧长。
+    # ★ 取头若干行 token 数的**众数**，不能只取第一条：抓包起始常常是残缺帧
+    #   （实测 20260914_051140 首行 16 token、后续全 80），只取首行会把整个文件
+    #   按错误帧长错位解析，而且是"能跑但全错"的那种。
+    # 按 token 数数而不是空格数：行尾常多一个空格，按空格会多算一个字节。
+    nbytes, hexlen, hexchr = NBYTES, HEXLEN, HEXCHR
+    from collections import Counter
+    cnt = Counter()
+    with open(fn, 'rb') as fp:
+        for _ in range(500):
+            ln = fp.readline()
+            if not ln:
+                break
+            i = ln.find(PAT)
+            if i < 0:
+                continue
+            tail = ln[i + 5:].rstrip(b'\r\n')
+            n = len(tail.split())
+            if n > 0:
+                cnt[n] += 1
+    if cnt:
+        nbytes = cnt.most_common(1)[0][0]
+        hexlen = nbytes * 3 - 1
+        hexchr = nbytes * 2
+    nch = nbytes // 4 - 1                       # 扣掉 4 字节帧尾
+
+    out = bytearray()
+    rem = b''
+    with open(fn, 'rb') as fp:
+        while True:
+            blk = fp.read(1 << 22)          # 4 MB 一块
+            if not blk:
+                break
+            parts = (rem + blk).split(b'\n')
+            rem = parts.pop()               # 末尾可能是半行，留到下一块
+            for ln in parts:
+                i = ln.find(PAT)
+                if i < 0:
+                    continue
+                h = ln[i + 5:i + 5 + hexlen].replace(b' ', b'')
+                if len(h) == hexchr:
+                    out += binascii.unhexlify(h)
+    # 帧 = nch 个数据 float + 1 个帧尾 float（0x7F800000 = +inf），丢掉帧尾
+    a = np.frombuffer(bytes(out), '<f4').reshape(-1, nch + 1)[:, :nch].copy()
+
+    if cache:
+        np.save(npy, a)
+    if verbose:
+        print("  [jf_load] %s -> %s（帧长 %d B，%d 通道），缓存写到 %s"
+              % (os.path.basename(fn), a.shape, nbytes, nch, os.path.basename(npy)))
+    return a
+
+
+if __name__ == '__main__':
+    import sys
+    for fn in sys.argv[1:]:
+        a = load_jf(fn, verbose=True)
+        print("  首帧 q=%s acc=%s" % (a[0, :4], a[0, 4:7]))

@@ -29,6 +29,8 @@ void usbhs_hid_poll(void)
     if (hid_up_avail())
         hid_up_flush();
 
+    hid_cmd_poll();                     /* 下行：解析主机命令（非阻塞） */
+
     if (trig_armed)
     {
         uint8_t key_now = (GPIO_ReadInputDataBit(GPIOC, GPIO_Pin_9) == RESET) ? 0 : 1;

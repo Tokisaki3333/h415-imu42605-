@@ -84,3 +84,6 @@ __pycache__/
 serial_runtime_*.txt
 static_*.bin
 *.npy
+
+# 分析脚本产出的图（随时可重生）
+accel_ellipse_static.png

@@ -29,11 +29,13 @@
 
 static float    s_win[3][V5F_DET_W];      /* 三轴滑窗环形缓冲 */
 static float    s_sum[3];                 /* 窗口内三轴累加和 */
+static float    s_sq[3];                  /* 窗口内三轴平方和（算交流能量用，O(1) 增量维护） */
 static uint16_t s_head;                   /* 环形写指针 */
 static uint16_t s_fill;                   /* 已填帧数（满 W 后窗有效） */
 static uint16_t s_on_cnt;                 /* 连续超阈计数 */
 static uint16_t s_off_cnt;                /* 连续低阈计数 */
 static uint8_t  s_state = 1u;             /* 当前状态：1 = 静止 */
+static uint16_t s_ac_cnt;                 /* 旁路判据连续满足帧数（撤销立即清零） */
 
 /* ---- 阈值查找表（离线算好，运行期只移位取档 + 查表） ----
  * thr(T) = clamp(10*sqrt(sigma_s^2 + e0^2*exp(-2T/tau)), base, 3*base)
@@ -52,13 +54,16 @@ static float jf_abs(float x) { return (x < 0.0f) ? -x : x; }
 uint8_t v5f_proc_static_detect(volatile v5f_hold_t *h, volatile v5f_proc_gate_t *gate)
 {
     float    level, inv, thr_on, thr_off;
+    float    e_ac, e_tot, m_ax, ms_ax, v_ax;
     uint16_t idx;
     uint8_t  i;
 
     /* ---- 滑窗更新（三轴，O(1)） ---- */
     for (i = 0u; i < 3u; i++) {
-        float x = h->imu.gyro_dps[i];
-        s_sum[i] += x - s_win[i][s_head];
+        float x   = h->imu.gyro_dps[i];
+        float old = s_win[i][s_head];
+        s_sum[i] += x - old;
+        s_sq[i]  += x * x - old * old;      /* 平方和同样 O(1) 增量维护 */
         s_win[i][s_head] = x;
     }
     s_head = (uint16_t)((s_head + 1u) % V5F_DET_W);
@@ -72,6 +77,31 @@ uint8_t v5f_proc_static_detect(volatile v5f_hold_t *h, volatile v5f_proc_gate_t 
     }
     h->stat.level_dps = level;
     h->stat.changed   = 0u;
+
+    /* ---- 交流能量与总能量（启动阶段旁路的判据，见 v5f_tune.h 的 V5F_DET_AC_*）----
+     * 交流能量 = 三轴滑窗方差之和 = sum_i ( E[x_i^2] - (E[x_i])^2 )，
+     *   对直流零偏**完全不可见** —— 这是旁路能绕开"零偏自环"的根本原因。
+     * 总能量 = sum_i E[x_i^2] = 交流能量 + (直流分量)^2，含零偏，用来挡恒定速率的真转动
+     *   （恒定速率没有交流量，只有总能量挡得住）。 */
+    e_ac = 0.0f; e_tot = 0.0f;
+    for (i = 0u; i < 3u; i++) {
+        m_ax  = s_sum[i] * inv;
+        ms_ax = s_sq[i] * inv;
+        v_ax  = ms_ax - m_ax * m_ax;
+        if (v_ax < 0.0f) v_ax = 0.0f;       /* 浮点抵消可能给出极小负值 */
+        e_ac  += v_ax;
+        e_tot += ms_ax;
+    }
+    h->stat.e_ac = e_ac;
+
+    /* 旁路门：连续 V5F_DET_AC_DEB_ON 帧满足才开（慢开）；一旦不满足**立即**关。
+     * 不对称是故意的 —— 旁路只加静止，错判成静止的代价由回退机制兜底。 */
+    if (e_ac < V5F_DET_AC_E_ON && e_tot < V5F_DET_AC_E_TOT) {
+        if (s_ac_cnt < V5F_DET_AC_DEB_ON) s_ac_cnt++;
+    } else {
+        s_ac_cnt = 0u;
+    }
+    h->stat.ac_bypass = (s_ac_cnt >= V5F_DET_AC_DEB_ON) ? 1u : 0u;
 
     /* ---- 初值窗 / 滑窗未满：不判，锁定静止 ---- */
     if (h->imu.corr_valid == 0u || s_fill < V5F_DET_W) {
@@ -89,7 +119,16 @@ uint8_t v5f_proc_static_detect(volatile v5f_hold_t *h, volatile v5f_proc_gate_t 
         if (thr_on < V5F_DET_THR_BASE) thr_on = V5F_DET_THR_BASE;
         thr_off = thr_on * V5F_DET_THR_OFF_RATIO;
 
-        if (s_state != 0u) {                          /* 静止中：找运动 */
+        /* ---- 启动阶段旁路（bias_ok 锁存前才参与）----
+         * 主路的阈值表索引来自"累积静止证据"，证据只在主路判静止时累加，于是上电零偏
+         * 残差超过表的上限时会形成闭环并**永久锁死**（实测 233341）。交流能量对直流
+         * 零偏不可见，所以用它作旁路绕开自环。旁路只做"或"：把"运动"改判成"静止"。
+         * 生效期间清掉主路计数器，免得旁路退出时带着过期计数立刻翻转。 */
+        if (h->imu.bias_ok == 0u && h->stat.ac_bypass != 0u) {
+            s_state   = 1u;
+            s_on_cnt  = 0u;
+            s_off_cnt = 0u;
+        } else if (s_state != 0u) {                   /* 静止中：找运动 */
             if (level > thr_on) {
                 if (++s_on_cnt >= V5F_DET_DEB_ON) {
                     s_state = 0u;
