@@ -366,7 +366,7 @@ static void hold_poll(void)
  *         会话 6.1~6.7%，整段被外部磁源覆盖时可达 1.4~2.9。
  *         它也把"是磁力计坏了还是环境坏了"分开：|y| 偏但方向对 = 环境；
  *         方向也乱 = 磁力计或标定。 */
-#define JF_CH_NUM     149u   /* **运行时**实际写入的列数。不是估的：tools/calib/count_cols.py
+#define JF_CH_NUM     154u   /* **运行时**实际写入的列数。不是估的：tools/calib/count_cols.py
                               * 逐行数 ch[c++] 得到静态 114，减掉 DRDY 间隔那条 if/else
                               * 链的 2 个未执行分支 = 112。ch[] 是栈上数组，多写一格就是
                               * 栈踩踏而编译器一个字都不会说 —— 改列必须用那个脚本复核。*/
@@ -684,7 +684,12 @@ static void justfloat_report(void)
         ch[c++] = g_v5f_hold.ekf.mag_cmp_thp;   /* ★VER=78 罗盘：预测航向(度) */
         ch[c++] = g_v5f_hold.ekf.mag_cmp_amn;   /* ★VER=78 罗盘：比力模长(g) */
         ch[c++] = g_v5f_hold.ekf.mag_cmp_mhn;   /* ★VER=78 罗盘：法平面内磁场模长 */
-        ch[c++] = g_v5f_hold.ekf.mag_age_ms;   /* ★VER=83 磁数据年龄(ms) */
+        ch[c++] = g_v5f_hold.ekf.mag_age_ms;
+        ch[c++] = g_v5f_hold.ekf.mag_rs;           /* ★VER=84 磁 R 放大倍数 */
+        ch[c++] = g_v5f_hold.ekf.tilt_inv_ms;      /* ★VER=84 倾角参考失效时长(ms) */
+        ch[c++] = (float)g_v5f_hold.ekf.mag_hold;  /* ★VER=84 磁被暂停 */
+        ch[c++] = (float)g_v5f_hold.ekf.grav_ok;   /* ★VER=84 重力观测门 */
+        ch[c++] = g_v5f_hold.ekf.grav_nis;         /* ★VER=84 重力观测 NIS */   /* ★VER=83 磁数据年龄(ms) */
 
 
     /* ---- 载荷必须是有限 float（数据有效性；与切帧无关，见下）----

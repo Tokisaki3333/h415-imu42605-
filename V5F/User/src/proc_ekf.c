@@ -132,7 +132,13 @@ static uint32_t s_ist_last;
 static float    s_w_int[3];           /* ★VER=83 永不归零的陀螺角增量积分 int(w dt) (rad) */
 static float    s_w_snap[3];          /* ★VER=83 磁 DRDY 时刻的积分快照 */
 static uint64_t s_mag_ts_last;        /* ★VER=83 上次见到的磁 DRDY 时间戳 (10ns 单位) */
-static float    s_mag_age_ms;         /* ★VER=83 上报：磁数据到使用时刻的年龄 (ms) */
+static float    s_mag_age_ms;
+static float    s_tilt_bad_s;         /* ★VER=84 倾角参考连续失效时长(s) */
+static float    s_tilt_inv_ms;        /* ★VER=84 上报：倾角参考失效时长(ms) */
+static uint8_t  s_grav_ok;            /* ★VER=84 上报：重力观测门状态 */
+static float    s_tilt_sig_deg;       /* ★VER=84 上报：倾角 1sigma(度) */
+static float    s_mag_rs;             /* ★VER=84 上报：磁 R 放大倍数 */
+static uint8_t  s_mag_hold;           /* ★VER=84 上报：磁因倾角失效被暂停 */         /* ★VER=83 上报：磁数据到使用时刻的年龄 (ms) */
 static uint32_t s_mag_cnt_upd;        /* ★VER=73 上一次真正施加磁观测时的 ist 样本号 */
 
 static uint64_t s_last_tick;
@@ -602,6 +608,7 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     uint32_t i;
 
     if (!V5F_EKF_YAW_OBS_EN || !gate->ekf_mag_yaw) return;
+    s_mag_hold = 0u;                    /* ★VER=84 */
     for (i = 0u; i < 3u; i++) mf[i] = h->mag.f[i];
     /* ★VER=72 量纲守卫 */
     {
@@ -635,7 +642,17 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     b0x = ci * sinf(V5F_MAG_DECL_RAD);
     b0y = ci * cosf(V5F_MAG_DECL_RAD);
     b0z = -V5F_EKF_DIP_TAN * ci;
-    sig2 = V5F_EKF_MAG_SIG_RAD * V5F_EKF_MAG_SIG_RAD;
+    /* ★VER=84 R 含倾角不确定度项：磁新息对倾角误差的灵敏度 =
+     * tan(dip) = V5F_EKF_DIP_TAN = 2.08，所以 sigma_tilt 会以 2.08 倍混进偏航新息。 */
+    s_tilt_sig_deg = sqrtf(s_P[6][6] + s_P[7][7]) * RAD2DEG;
+    {
+        float rb = V5F_EKF_MAG_SIG_RAD * V5F_EKF_MAG_SIG_RAD;
+        float dl = V5F_EKF_DIP_TAN * (s_tilt_sig_deg * DEG2RAD);
+        float ra = rb + dl * dl;
+        if (ra > rb * V5F_EKF_MAG_RSCALE_MAX) ra = rb * V5F_EKF_MAG_RSCALE_MAX;
+        sig2 = ra;
+        s_mag_rs = ra / rb;
+    }
 
     /* ---- 几何诊断（导航系水平二维残差；定义不变，供日志与整角对齐用） ---- */
     q_to_R(&s_x[IX_Q], Rt);
@@ -782,6 +799,15 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         if (s_rej[3] < 250u) s_rej[3]++;
         s_gate_bits |= V5F_EKF_GB_CHI2;
     } else {
+        /* ★VER=84 倾角参考失效超时 -> 暂停磁更新（并记门位）。
+         * 不做这个，磁更新的倾斜行 dx[6:8]=P[6:8,8]*r/S 会在倾角无观测时无界累积；
+         * 仿真：30 度磁激励下倾角 52度 -> 1.1度、偏航 20度 -> 0.75度。 */
+        if (s_tilt_bad_s > V5F_EKF_MAG_GT_HOLD_S) {
+            s_mag_hold = 1u;
+            if (s_rej[3] < 250u) s_rej[3]++;
+            s_gate_bits |= V5F_EKF_GB_MAGHOLD;
+            return;
+        }
         /* ★VER=73 只在磁样本真的更新时施加一次 */
         {
             uint32_t icm = g_shm ? g_shm->ist.hdr.cnt : 0u;
@@ -1074,6 +1100,11 @@ static void ekf_publish(volatile v5f_hold_t *h)
        h->ekf.mag_cmp_amn = s_mag_cmp_amn;
        h->ekf.mag_cmp_mhn = s_mag_cmp_mhn;
        h->ekf.mag_age_ms = s_mag_age_ms;
+       h->ekf.mag_rs = s_mag_rs;
+       h->ekf.tilt_inv_ms = s_tilt_inv_ms;
+       h->ekf.mag_hold = s_mag_hold;
+       h->ekf.grav_ok = s_grav_ok;
+       h->ekf.grav_nis = s_nis[3];
         h->ekf.tilt_dqx = s_tilt_dqx;
         h->ekf.tilt_dqy = s_tilt_dqy;
         h->ekf.tilt_dqz = s_tilt_dqz;
@@ -1261,6 +1292,12 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
         }
         s_mag_age_ms = (ts != 0ULL && tk > ts) ? (float)(tk - ts) * 1e-5f : 0.0f;
     }
+    /* ★VER=84 倾角参考失效累计（每帧），驱动磁暂停门。
+     * 门信号取上一帧算好的 gate->ekf_tilt，0.3s 的门不在乎一帧滞后。 */
+    s_grav_ok = gate->ekf_tilt;
+    if (gate->ekf_tilt) s_tilt_bad_s = 0.0f;
+    else if (s_tilt_bad_s < 10.0f) s_tilt_bad_s += dt;
+    s_tilt_inv_ms = s_tilt_bad_s * 1e3f;
     for (i = 0u; i < 3u; i++) {
         s_dth[i] += (w[i] - s_x[IX_BG + i]) * dt;
         s_dvb[i] += f[i] * dt;

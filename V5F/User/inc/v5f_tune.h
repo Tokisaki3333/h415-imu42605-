@@ -95,7 +95,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        83u
+#define V5F_FW_VER        84u
 #define V5F_EKF_EN        1u      /* 阶段 1（S1）已落地：16 维 ESKF 影子模式 */
 #define V5F_DET_AC_EN     1u
 /* GSV 轮次间隔常量在 Common/Common/GPS.c 内定义：那个文件由 V3F 编译，看不到本头。 */
@@ -669,7 +669,16 @@
 /* ★VER=74 回退 179 -> 150：实测被它拒掉的帧 |v| 只有 0.135~0.212
  * （干净几何是 0.416~0.44），正是几何退化档 —— 放开等于在磁北最没有意义的
  * 时候去融合。保留 150 作为第二道退化保护（BH_MIN 修好后它很少触发）。 */
-#define V5F_EKF_MAG_R_MAX_DEG    150.0f   /* 磁偏航硬新息门：|r| 超它整帧丢弃 */
+#define V5F_EKF_MAG_R_MAX_DEG    150.0f
+/* ★VER=84 磁融合的门控判据 = 倾角参考是否有效（不是 |a| 带宽）。
+ * 几何事实：磁新息对倾角误差的灵敏度 = tan(dip) = V5F_EKF_DIP_TAN = 2.08
+ *   （= b0z/b0h：倾角误差把磁场的长竖直分量转进水平面），而 H 只保留偏航列
+ *   -> 倾角误差会以 2.08 倍被当成偏航激励。所以：
+ *   1) R 里必须含 (tan(dip)*sigma_tilt)^2；
+ *   2) 重力观测连续失效超 MAG_GT_HOLD_S -> 暂停磁更新（否则
+ *      磁更新的倾斜行 dx[6:8]=P[6:8,8]*r/S 会在倾角无观测时无界累积）。 */
+#define V5F_EKF_MAG_GT_HOLD_S     0.30f
+#define V5F_EKF_MAG_RSCALE_MAX    100.0f   /* 磁偏航硬新息门：|r| 超它整帧丢弃 */
 /* ★VER=82 K_MAX 0.05 -> 0.015：按实测的**非磁漂移速度**把环路放慢，降偏航抖动。
  * 一阶环总误差 = d*tau + s*sqrt(1/(2*tau*f))：
  *   d(非磁漂移) = 0.060 度/秒(静止, VER=73/74 休眠段实测) ~ 0.18(强激励后 15s 累积 2.72 度)
@@ -797,6 +806,7 @@
 #define V5F_EKF_GB_CHI2          0x0200u   /* 本周期有观测被内层 chi2 剔除 */
 #define V5F_EKF_GB_ORIGIN        0x0400u   /* ENU 原点已建立（位置列才有绝对意义） */
 #define V5F_EKF_GB_SAT           0x0800u   /* 本周期有加计削顶帧（比力不可信） */
-#define V5F_EKF_GB_ALIGN_FORCE   0x1000u   /* 对齐是超时/强制兜底来的 */
+#define V5F_EKF_GB_ALIGN_FORCE   0x1000u   /* 解算器强制对齐（对齐异常） */
+#define V5F_EKF_GB_MAGHOLD       0x2000u   /* ★VER=84 磁因倾角参考失效被暂停 */   /* 对齐是超时/强制兜底来的 */
 
 #endif /* __V5F_TUNE_H */

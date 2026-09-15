@@ -386,4 +386,8 @@ CH_BY_NCH[148] = CH_148
 CH_149 = dict(CH_148)
 CH_149.update({'ekf_mag_age_ms': 148})   # ★VER=83 磁数据年龄(ms)
 CH_BY_NCH[149] = CH_149
-CH = CH_149
+CH_154 = dict(CH_149)
+CH_154.update({'ekf_mag_rs': 149, 'ekf_tilt_inv_ms': 150, 'ekf_mag_hold': 151,
+               'ekf_grav_ok': 152, 'ekf_grav_nis': 153})  # VER=84
+CH_BY_NCH[154] = CH_154
+CH = CH_154
