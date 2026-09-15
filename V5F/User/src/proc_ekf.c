@@ -129,6 +129,10 @@ static uint8_t  s_bh_fill;
 static uint16_t s_mn_bad;             /* 基线连续打不开的次数（自愈用）*/
 static float    s_mag_dth[3];         /* 自磁力计采样以来的**机体**转动量 rad（补样本陈旧） */
 static uint32_t s_ist_last;
+static float    s_w_int[3];           /* ★VER=83 永不归零的陀螺角增量积分 int(w dt) (rad) */
+static float    s_w_snap[3];          /* ★VER=83 磁 DRDY 时刻的积分快照 */
+static uint64_t s_mag_ts_last;        /* ★VER=83 上次见到的磁 DRDY 时间戳 (10ns 单位) */
+static float    s_mag_age_ms;         /* ★VER=83 上报：磁数据到使用时刻的年龄 (ms) */
 static uint32_t s_mag_cnt_upd;        /* ★VER=73 上一次真正施加磁观测时的 ist 样本号 */
 
 static uint64_t s_last_tick;
@@ -1069,6 +1073,7 @@ static void ekf_publish(volatile v5f_hold_t *h)
        h->ekf.mag_cmp_thp = s_mag_cmp_thp;
        h->ekf.mag_cmp_amn = s_mag_cmp_amn;
        h->ekf.mag_cmp_mhn = s_mag_cmp_mhn;
+       h->ekf.mag_age_ms = s_mag_age_ms;
         h->ekf.tilt_dqx = s_tilt_dqx;
         h->ekf.tilt_dqy = s_tilt_dqy;
         h->ekf.tilt_dqz = s_tilt_dqz;
@@ -1208,6 +1213,9 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             s_baro_t_last = 0.0f; s_baro_t_seen = 0u;
             s_alin_g = 0.0f; s_sat = 0u;
             s_mag_dth[0] = s_mag_dth[1] = s_mag_dth[2] = 0.0f;
+            s_w_int[0] = s_w_int[1] = s_w_int[2] = 0.0f;
+            s_w_snap[0] = s_w_snap[1] = s_w_snap[2] = 0.0f;
+            s_mag_ts_last = 0ULL;
             s_bh_idx = 0u; s_bh_fill = 0u;
             s_mag_anchor = 0u;   /* ★VER=51 重新对齐后允许再做一次快速偏航对齐 */
             for (i = 0u; i < 5u; i++) { s_nis[i] = 0.0f; s_rej[i] = 0u; }
@@ -1237,18 +1245,27 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
      *   "标称角速度 = 量测 - bg_hat"。加计那一路本来就是对的（下面 dv 里减 ba*dt_e）。 */
     raw_w_rads(h, w);
     raw_f_mps2(h, f);
-    /* 磁力计新样本边沿：把"自采样以来的转动量"清零（补样本陈旧用） */
+    /* ★VER=83 磁陈旧补偿改用磁自己的 DRDY 时间戳。
+     * 旧做法在 ist.hdr.cnt 变化时把 s_mag_dth 清零，等价于把"我发现计数器变了"
+     * 当成采样时刻：DRDY 到发布/发现的流水线延迟被算成 0，而这份延迟正是
+     * "拿旧磁数据修新陀螺仪"的量。现改为：s_w_int 永不归零地积分 w*dt，
+     * 磁时间戳一变就快照 s_w_snap，补偿角 = s_w_int(now) - s_w_snap
+     * = 从 t_drdy 到现在的真实转角。同时上报磁数据年龄用于判定延迟量级。 */
     {
         uint32_t ic = g_shm ? g_shm->ist.hdr.cnt : 0u;
-        if (ic != s_ist_last) {
+        uint64_t ts = h->mag.fresh.drdy_tick;
+        if (ic != s_ist_last || ts != s_mag_ts_last) {
             s_ist_last = ic;
-            s_mag_dth[0] = 0.0f; s_mag_dth[1] = 0.0f; s_mag_dth[2] = 0.0f;
+            s_mag_ts_last = ts;
+            for (i = 0u; i < 3u; i++) s_w_snap[i] = s_w_int[i];
         }
+        s_mag_age_ms = (ts != 0ULL && tk > ts) ? (float)(tk - ts) * 1e-5f : 0.0f;
     }
     for (i = 0u; i < 3u; i++) {
         s_dth[i] += (w[i] - s_x[IX_BG + i]) * dt;
         s_dvb[i] += f[i] * dt;
-        s_mag_dth[i] += w[i] * dt;      /* 用未扣 bg 的量测即可：bg 只有 0.1 dps 量级 */
+        s_w_int[i] += w[i] * dt;
+        s_mag_dth[i] = s_w_int[i] - s_w_snap[i];
     }
     /* ★ 姿态增量**逐帧复合成四元数**，而不是把轴角矢量相加。
      *   相加只在单轴转动时等于复合；三轴同时转动时丢掉交换子项，表现为绕第三轴的

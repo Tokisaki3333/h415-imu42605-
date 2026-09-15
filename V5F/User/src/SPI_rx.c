@@ -366,7 +366,7 @@ static void hold_poll(void)
  *         会话 6.1~6.7%，整段被外部磁源覆盖时可达 1.4~2.9。
  *         它也把"是磁力计坏了还是环境坏了"分开：|y| 偏但方向对 = 环境；
  *         方向也乱 = 磁力计或标定。 */
-#define JF_CH_NUM     148u   /* **运行时**实际写入的列数。不是估的：tools/calib/count_cols.py
+#define JF_CH_NUM     149u   /* **运行时**实际写入的列数。不是估的：tools/calib/count_cols.py
                               * 逐行数 ch[c++] 得到静态 114，减掉 DRDY 间隔那条 if/else
                               * 链的 2 个未执行分支 = 112。ch[] 是栈上数组，多写一格就是
                               * 栈踩踏而编译器一个字都不会说 —— 改列必须用那个脚本复核。*/
@@ -375,7 +375,7 @@ static void hold_poll(void)
 #define JF_FW_TAG  ((float)(((uint32_t)V5F_FW_VER << 16) | ((uint32_t)JF_CH_NUM << 8) \
                   | ((uint32_t)V5F_EKF_EN << 0) | ((uint32_t)V5F_MAG_CAL_EN << 1) \
                   | ((uint32_t)V5F_DET_AC_EN << 2)))
-#define JF_FRAME_LEN  (JF_CH_NUM * 4u + 6u)      /* 494 = 帧头2+帧长2+载荷488+帧尾2 */
+#define JF_FRAME_LEN  (JF_CH_NUM * 4u + 6u)      /* VER=83: 602 = 帧头2+帧长2+载荷596+帧尾2 */
 
 
 /* 载荷里出现过非有限 float 的累计次数（粘滞：发生即置位，经 flags bit11 上报）。
@@ -684,6 +684,7 @@ static void justfloat_report(void)
         ch[c++] = g_v5f_hold.ekf.mag_cmp_thp;   /* ★VER=78 罗盘：预测航向(度) */
         ch[c++] = g_v5f_hold.ekf.mag_cmp_amn;   /* ★VER=78 罗盘：比力模长(g) */
         ch[c++] = g_v5f_hold.ekf.mag_cmp_mhn;   /* ★VER=78 罗盘：法平面内磁场模长 */
+        ch[c++] = g_v5f_hold.ekf.mag_age_ms;   /* ★VER=83 磁数据年龄(ms) */
 
 
     /* ---- 载荷必须是有限 float（数据有效性；与切帧无关，见下）----

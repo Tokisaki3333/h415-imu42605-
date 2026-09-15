@@ -95,7 +95,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        82u
+#define V5F_FW_VER        83u
 #define V5F_EKF_EN        1u      /* 阶段 1（S1）已落地：16 维 ESKF 影子模式 */
 #define V5F_DET_AC_EN     1u
 /* GSV 轮次间隔常量在 Common/Common/GPS.c 内定义：那个文件由 V3F 编译，看不到本头。 */

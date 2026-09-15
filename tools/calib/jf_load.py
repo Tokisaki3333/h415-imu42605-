@@ -383,4 +383,7 @@ CH_148.update({'ekf_mag_rx': 128, 'ekf_mag_ry': 129,
                'mag_cmp_amn': 146,   # 姿态"上"与加计夹角(度)
                'mag_cmp_mhn': 147})  # 重力法平面内磁场模长
 CH_BY_NCH[148] = CH_148
-CH = CH_148
+CH_149 = dict(CH_148)
+CH_149.update({'ekf_mag_age_ms': 148})   # ★VER=83 磁数据年龄(ms)
+CH_BY_NCH[149] = CH_149
+CH = CH_149

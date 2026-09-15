@@ -237,6 +237,7 @@ typedef struct {
         float    mag_cmp_thm;   /* ★VER=78 罗盘：重力法平面内实测航向(度) */
         float    mag_cmp_thp;   /* ★VER=78 罗盘：同一平面内预测航向(度) */
         float    mag_cmp_amn;   /* ★VER=78 罗盘：比力模长(g)，1.0=加计即重力 */
+        float    mag_age_ms;    /* ★VER=83 磁数据年龄(ms) = IMU tick - mag DRDY tick */
         float    mag_cmp_mhn;   /* ★VER=78 罗盘：法平面内磁场模长(0~1) */
     float            sigma_yaw_deg;   /* 偏航 1sigma（度）—— "航向现在能不能信"的直接读数：
                                        * 门开被 M7 收紧、门关按 Q_bg 增长。 */
