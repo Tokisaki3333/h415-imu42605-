@@ -1,0 +1,116 @@
+﻿����ʱ���� = 112
+
+   0  ch[c++]     = g_v5f_hold.att.q[i];
+   1  ch[c++]     = g_v5f_hold.att.q[i];
+   2  ch[c++]     = g_v5f_hold.att.q[i];
+   3  ch[c++]     = g_v5f_hold.att.q[i];
+   4  ch[c++] = g_v5f_hold.vel.v_nav[i];
+   5  ch[c++] = g_v5f_hold.vel.v_nav[i];
+   6  ch[c++] = g_v5f_hold.vel.v_nav[i];
+   7  ���ݲ��ſص�����
+   8  �ٶȹ����� + ������ƫ׷����
+   9  ���ٶ���ƫ׷����
+  10  ǣ��������
+  11  ǣ��������
+  12  ǣ��������
+  13  ǣ����ƫ����
+  14  ǣ����ƫ����
+  15  ǣ����ƫ����
+  16  ch[c++] = (float)f;
+  17  ��һ֡ DMA1 ISR ��ʱ us�����Ϸ�˵����
+  18  ch[c++] = (float)g_v5f_hold.imu.gyro_lsb[i];
+  19  ch[c++] = (float)g_v5f_hold.imu.gyro_lsb[i];
+  20  ch[c++] = (float)g_v5f_hold.imu.gyro_lsb[i];
+  21  ch[c++] = (float)g_v5f_hold.imu.accel_lsb[i];
+  22  ch[c++] = (float)g_v5f_hold.imu.accel_lsb[i];
+  23  ch[c++] = (float)g_v5f_hold.imu.accel_lsb[i];
+  24  ch[c++] = g_v5f_hold.imu.temp_celsius;
+  25  ��֡����û�л�׼
+  26  ch[c++] = g_v5f_hold.imu.gyro_dps[i];
+  27  ch[c++] = g_v5f_hold.imu.gyro_dps[i];
+  28  ch[c++] = g_v5f_hold.imu.gyro_dps[i];
+  29  ch[c++] = g_v5f_hold.imu.gyro_bias_dps[i];
+  30  ch[c++] = g_v5f_hold.imu.gyro_bias_dps[i];
+  31  ch[c++] = g_v5f_hold.imu.gyro_bias_dps[i];
+  32  ch[c++] = g_v5f_hold.imu.accel_g[i];
+  33  ch[c++] = g_v5f_hold.imu.accel_g[i];
+  34  ch[c++] = g_v5f_hold.imu.accel_g[i];
+  35  ch[c++] = (float)g_v5f_hold.imu.bias_evidence_
+  36  ch[c++] = (float)g_v5f_proc_gate.att_tilt;
+  37  ch[c++] = (float)g_v5f_proc_gate.vel_soft;
+  38  ch[c++] = (float)g_v5f_hold.mag.lsb[i];
+  39  ch[c++] = (float)g_v5f_hold.mag.lsb[i];
+  40  ch[c++] = (float)g_v5f_hold.mag.lsb[i];
+  41  ch[c++] = (float)g_shm->ist.hdr.cnt;
+  42  ch[c++] = g_v5f_hold.mag.f[i];
+  43  ch[c++] = g_v5f_hold.mag.f[i];
+  44  ch[c++] = g_v5f_hold.mag.f[i];
+  45  ch[c++] = g_v5f_hold.mag.mag_norm;
+  46  ch[c++] = g_v5f_hold.mag.Bw[i];
+  47  ch[c++] = g_v5f_hold.mag.Bw[i];
+  48  ch[c++] = g_v5f_hold.mag.Bw[i];
+  49  ch[c++] = g_v5f_hold.mag.psi_true_deg;
+  50  ch[c++] = (float)g_v5f_hold.mag.trust;
+  51  ch[c++] = g_v5f_hold.baro.press_pascal;
+  52  ch[c++] = g_v5f_hold.baro.temp_celsius;
+  53  ch[c++] = (float)g_shm->bmp.hdr.cnt;
+  54  ch[c++] = g_v5f_hold.gps_rmc.speed_mps;
+  55  ch[c++] = (float)g_v5f_hold.gps_rmc.fresh.flag
+  56  ch[c++] = (float)g_shm->gps_rmc.hdr.cnt;
+  57  ch[c++] = g_v5f_hold.gps_gga.alt_m;
+  58  ch[c++] = (float)g_v5f_hold.gps_gga.fix_qualit
+  59  ch[c++] = (float)g_v5f_hold.gps_gga.sat_num;
+  60  ch[c++] = g_v5f_hold.gps_gga.hdop;
+  61  ch[c++] = (float)g_v5f_hold.gps_gga.fresh.flag
+  62  ch[c++] = (float)g_shm->gps_gga.hdr.cnt;
+  63  ch[c++] = g_v5f_hold.gps_gsa.vdop;
+  64  ch[c++] = (float)g_shm->gps_gsa.hdr.cnt;
+  65  ch[c++] = g_v5f_hold.gps_rmc.course_deg;
+  66  ch[c++] = (float)la_i;
+  67  ch[c++] = (float)(la - la_i * 10000000);
+  68  ch[c++] = (float)lo_i;
+  69  ch[c++] = (float)(lo - lo_i * 10000000);
+  70  ch[c++] = (float)g_v5f_hold.gps_gsv.sats_view;
+  71  ch[c++] = g_v5f_hold.gps_gsv.snr_avg_dbhz;
+  72  ch[c++] = (float)g_v5f_hold.gps_gsv.snr_min;
+  73  ch[c++] = (float)g_v5f_hold.gps_gsv.snr_n;
+  74  ch[c++] = (float)g_shm->gps_gsv.hdr.cnt;
+  75  ���� talker ��
+  76  ����ָ�ƣ�ÿ��ˢ���Ⱥ˶���
+  77  ch[c++] = g_cmd_echo;
+  78  ch[c++] = (float)g_cmd_cnt;
+  79  ch[c++] = (float)g_cmd_last;
+  80  ch[c++] = g_v5f_hold.baro.press_avg_pascal;
+  81  ch[c++] = g_v5f_hold.stat.e_ac;
+  82  ch[c++] = (float)g_v5f_hold.stat.ac_bypass;
+  83  ch[c++] = g_v5f_hold.ekf.p[i];
+  84  ch[c++] = g_v5f_hold.ekf.p[i];
+  85  ch[c++] = g_v5f_hold.ekf.p[i];
+  86  ch[c++] = g_v5f_hold.ekf.v[i];
+  87  ch[c++] = g_v5f_hold.ekf.v[i];
+  88  ch[c++] = g_v5f_hold.ekf.v[i];
+  89  ch[c++] = g_v5f_hold.ekf.q[i];
+  90  ch[c++] = g_v5f_hold.ekf.q[i];
+  91  ch[c++] = g_v5f_hold.ekf.q[i];
+  92  ch[c++] = g_v5f_hold.ekf.q[i];
+  93  ch[c++] = g_v5f_hold.ekf.a_nav[i];
+  94  ch[c++] = g_v5f_hold.ekf.a_nav[i];
+  95  ch[c++] = g_v5f_hold.ekf.a_nav[i];
+  96  ch[c++] = g_v5f_hold.ekf.ba[i];
+  97  ch[c++] = g_v5f_hold.ekf.ba[i];
+  98  ch[c++] = g_v5f_hold.ekf.ba[i];
+  99  ch[c++] = g_v5f_hold.ekf.bg[i];
+ 100  ch[c++] = g_v5f_hold.ekf.bg[i];
+ 101  ch[c++] = g_v5f_hold.ekf.bg[i];
+ 102  ch[c++] = g_v5f_hold.ekf.b_baro;
+ 103  ch[c++] = (float)g_v5f_hold.ekf.gate_bits;
+ 104  ch[c++] = g_v5f_hold.ekf.sigma_yaw_deg;
+ 105  ch[c++] = g_v5f_hold.ekf.sigma_pos_h;
+ 106  ch[c++] = g_v5f_hold.ekf.sigma_vel_h;
+ 107  ch[c++] = g_v5f_hold.ekf.nis[i];
+ 108  ch[c++] = g_v5f_hold.ekf.nis[i];
+ 109  ch[c++] = g_v5f_hold.ekf.nis[i];
+ 110  ch[c++] = g_v5f_hold.ekf.nis[i];
+ 111  ch[c++] = g_v5f_hold.ekf.nis[i];
+
+JLEN 454  �ؼ��У� {'dt_us': 25, 'fw_tag': 76, 'cmd_echo': 77, 'cmd_cnt': 78, 'cmd_last': 79, 'press_avg': 80, 'e_ac': 81, 'ac_bypass': 82, 'ekf_p': 83, 'ekf_q': 89, 'a_nav': 93, 'b_baro': 102, 'gate_bits': 103, 'sigma_yaw': 104, 'sigma_pos_h': 105, 'sigma_vel_h': 106, 'nis': 107}

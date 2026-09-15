@@ -212,6 +212,32 @@ typedef struct {
     float            mag_bh;          /* |B 水平分量| / |B|（死点判据量，正常 0.59）*/
     float            mag_r_deg;       /* M7 新息（度）：恒 0 说明观测没形成 */
     float            p_yy;            /* P[8][8]：偏航方差，与 R 一比可估 K */
+     uint8_t      prop_ok;   /* VER=44 EKF 内部状态：传播是否完成 */
+     uint8_t      f_ok;   /* VER=44 EKF 内部状态：传播是否完成 */
+     uint8_t      prop_row;   /* VER=44 EKF 内部状态：传播是否完成 */
+     uint8_t      stage;   /* VER=44 EKF 内部状态：传播是否完成 */
+     uint16_t     mag_rej;   /* VER=44 EKF 内部状态：传播是否完成 */
+      float     mag_fhb;   /* VER=45 机体系水平占比（向量有效性） */
+       float    mag_rx;   /* VER=46 */
+       float    mag_ry;   /* VER=46 */
+        float    mag_vx;   /* VER=67 */
+        float    mag_vy;   /* VER=67 */
+        float    mag_v0x;   /* VER=67 */
+        float    mag_v0y;   /* VER=67 */
+        float    mag_yawpre;   /* VER=67 */
+       float    mag_dqx;   /* VER=46 */
+       float    mag_dqy;   /* VER=46 */
+       float    mag_dqz;   /* VER=46 */
+        float    tilt_dqx;   /* VER=50 */
+        float    tilt_dqy;   /* VER=50 */
+        float    tilt_dqz;   /* VER=50 */
+        float    tilt_prx;   /* VER=50 */
+        float    tilt_pry;   /* VER=50 */
+        float    tilt_prz;   /* VER=50 */
+        float    mag_cmp_thm;   /* ★VER=78 罗盘：重力法平面内实测航向(度) */
+        float    mag_cmp_thp;   /* ★VER=78 罗盘：同一平面内预测航向(度) */
+        float    mag_cmp_amn;   /* ★VER=78 罗盘：比力模长(g)，1.0=加计即重力 */
+        float    mag_cmp_mhn;   /* ★VER=78 罗盘：法平面内磁场模长(0~1) */
     float            sigma_yaw_deg;   /* 偏航 1sigma（度）—— "航向现在能不能信"的直接读数：
                                        * 门开被 M7 收紧、门关按 Q_bg 增长。 */
     float            sigma_tilt_deg;  /* 倾角(水平两轴合成) 1sigma，度。

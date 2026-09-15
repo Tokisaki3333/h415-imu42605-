@@ -1,0 +1,73 @@
+﻿fw_tag 1536263  ʱ�� 60.00 s
+
+press_avg ȫ��: min 0.00 max 101391.49 Pa  ��-�� 101391.49 Pa (= 8441.856 m)
+press_avg ȥ�� 0 ֵ��: Ψһֵ 1148, p50 101385.14, std 1.739 Pa (=144.8 mm)
+������ press_pascal: p50 101385.15 std 5.342 Pa
+
+=== �� ����ȸ߶Σ�̧��֮ǰ���� 1 s��Ӧ��ƽ ===
+  t=  0.2~  3.0  Ψһֵ   270  p50 101384.422  ���� std 0.8060 Pa (=67.11 mm)  ��ĩ��  -0.539 Pa (= +4.49 cm)
+  t=  3.0~  7.0  Ψһֵ   427  p50 101383.738  ���� std 1.5747 Pa (=131.11 mm)  ��ĩ��  +5.781 Pa (=-48.13 cm)
+  t=  7.0~ 11.0  Ψһֵ   361  p50 101387.672  ���� std 1.1143 Pa (=92.78 mm)  ��ĩ��  -0.672 Pa (= +5.59 cm)
+  t= 11.0~ 15.0  Ψһֵ   404  p50 101385.688  ���� std 1.3977 Pa (=116.38 mm)  ��ĩ��  -1.523 Pa (=+12.68 cm)
+
+=== �� ȫʱ���ᣨÿ 1 s����press_avg / h_baro / p_z / b_baro / zupt / baro�� ===
+  t=  0.0  p=    0.000 Pa  h=+8436.319 m  p_z=  +0.000  b_baro=  +0.000  zupt=0 baro=0
+  t=  1.0  p=101383.047 Pa  h=  -4.833 m  p_z=  -3.913  b_baro=  -1.048  zupt=1 baro=0
+  t=  2.0  p=101383.812 Pa  h=  -4.897 m  p_z=  -3.917  b_baro=  -1.049  zupt=1 baro=0
+  t=  3.0  p=101383.633 Pa  h=  -4.882 m  p_z=  -3.911  b_baro=  -1.049  zupt=1 baro=0
+  t=  4.0  p=101382.797 Pa  h=  -4.812 m  p_z=  -3.905  b_baro=  -1.048  zupt=1 baro=0
+  t=  5.0  p=101382.828 Pa  h=  -4.815 m  p_z=  -3.918  b_baro=  -1.035  zupt=0 baro=0
+  t=  6.0  p=101384.641 Pa  h=  -4.966 m  p_z=  -3.919  b_baro=  -1.031  zupt=0 baro=0
+  t=  7.0  p=101389.414 Pa  h=  -5.363 m  p_z=  -3.926  b_baro=  -1.027  zupt=1 baro=0
+  t=  8.0  p=101387.922 Pa  h=  -5.239 m  p_z=  -4.167  b_baro=  -1.026  zupt=1 baro=0
+  t=  9.0  p=101389.922 Pa  h=  -5.405 m  p_z=  -4.164  b_baro=  -1.028  zupt=0 baro=0
+  t= 10.0  p=101387.695 Pa  h=  -5.220 m  p_z=  -4.158  b_baro=  -1.029  zupt=0 baro=0
+  t= 11.0  p=101388.742 Pa  h=  -5.307 m  p_z=  -4.190  b_baro=  -1.023  zupt=0 baro=0
+  t= 12.0  p=101386.945 Pa  h=  -5.158 m  p_z=  -4.155  b_baro=  -1.024  zupt=0 baro=0
+  t= 13.0  p=101387.914 Pa  h=  -5.238 m  p_z=  -4.112  b_baro=  -1.027  zupt=0 baro=0
+  t= 14.0  p=101385.648 Pa  h=  -5.050 m  p_z=  -4.111  b_baro=  -1.027  zupt=0 baro=0
+  t= 15.0  p=101387.219 Pa  h=  -5.180 m  p_z=  -4.108  b_baro=  -1.029  zupt=1 baro=0
+  t= 16.0  p=101386.305 Pa  h=  -5.104 m  p_z=  -4.081  b_baro=  -1.030  zupt=1 baro=0
+  t= 17.0  p=101386.617 Pa  h=  -5.130 m  p_z=  -4.036  b_baro=  -1.032  zupt=0 baro=0
+  t= 18.0  p=101385.453 Pa  h=  -5.033 m  p_z=  -4.016  b_baro=  -1.037  zupt=0 baro=0
+  t= 19.0  p=101384.453 Pa  h=  -4.950 m  p_z=  -3.995  b_baro=  -1.074  zupt=1 baro=0
+  t= 20.0  p=101383.906 Pa  h=  -4.905 m  p_z=  -3.862  b_baro=  -1.073  zupt=0 baro=0
+  t= 21.0  p=101384.469 Pa  h=  -4.951 m  p_z=  -3.875  b_baro=  -1.072  zupt=1 baro=0
+  t= 22.0  p=101385.680 Pa  h=  -5.052 m  p_z=  -3.885  b_baro=  -1.059  zupt=0 baro=0
+  t= 23.0  p=101384.812 Pa  h=  -4.980 m  p_z=  -3.885  b_baro=  -1.055  zupt=0 baro=0
+  t= 24.0  p=101384.953 Pa  h=  -4.992 m  p_z=  -3.922  b_baro=  -1.053  zupt=1 baro=0
+  t= 25.0  p=101386.195 Pa  h=  -5.095 m  p_z=  -3.968  b_baro=  -1.052  zupt=0 baro=0
+  t= 26.0  p=101385.664 Pa  h=  -5.051 m  p_z=  -3.966  b_baro=  -1.052  zupt=0 baro=0
+  t= 27.0  p=101386.125 Pa  h=  -5.089 m  p_z=  -3.955  b_baro=  -1.053  zupt=0 baro=0
+  t= 28.0  p=101382.477 Pa  h=  -4.785 m  p_z=  -3.757  b_baro=  -1.045  zupt=0 baro=0
+  t= 29.0  p=101381.945 Pa  h=  -4.741 m  p_z=  -3.761  b_baro=  -1.045  zupt=0 baro=0
+  t= 30.0  p=101381.102 Pa  h=  -4.671 m  p_z=  -3.647  b_baro=  -1.047  zupt=0 baro=0
+  t= 31.0  p=101381.133 Pa  h=  -4.674 m  p_z=  -3.627  b_baro=  -1.046  zupt=0 baro=0
+  t= 32.0  p=101383.891 Pa  h=  -4.903 m  p_z=  -3.582  b_baro=  -1.046  zupt=0 baro=0
+  t= 33.0  p=101383.766 Pa  h=  -4.893 m  p_z=  -3.797  b_baro=  -1.043  zupt=0 baro=0
+  t= 34.0  p=101383.336 Pa  h=  -4.857 m  p_z=  -3.729  b_baro=  -1.045  zupt=0 baro=0
+  t= 35.0  p=101382.391 Pa  h=  -4.778 m  p_z=  -3.656  b_baro=  -1.041  zupt=0 baro=0
+  t= 36.0  p=101383.852 Pa  h=  -4.900 m  p_z=  -3.596  b_baro=  -1.047  zupt=0 baro=0
+  t= 37.0  p=101383.180 Pa  h=  -4.844 m  p_z=  -3.530  b_baro=  -1.047  zupt=0 baro=0
+  t= 38.0  p=101384.406 Pa  h=  -4.946 m  p_z=  -3.879  b_baro=  -1.046  zupt=0 baro=0
+  t= 39.0  p=101385.914 Pa  h=  -5.072 m  p_z=  -3.995  b_baro=  -1.045  zupt=0 baro=0
+  t= 40.0  p=101385.688 Pa  h=  -5.053 m  p_z=  -3.998  b_baro=  -1.045  zupt=0 baro=0
+  t= 41.0  p=101386.258 Pa  h=  -5.100 m  p_z=  -4.191  b_baro=  -1.051  zupt=1 baro=0
+  t= 42.0  p=101386.781 Pa  h=  -5.144 m  p_z=  -4.184  b_baro=  -1.051  zupt=1 baro=0
+  t= 43.0  p=101385.438 Pa  h=  -5.032 m  p_z=  -4.061  b_baro=  -1.051  zupt=1 baro=0
+  t= 44.0  p=101387.008 Pa  h=  -5.163 m  p_z=  -4.050  b_baro=  -1.051  zupt=1 baro=0
+  t= 45.0  p=101385.438 Pa  h=  -5.032 m  p_z=  -4.083  b_baro=  -1.051  zupt=1 baro=0
+  t= 46.0  p=101386.812 Pa  h=  -5.147 m  p_z=  -4.083  b_baro=  -1.051  zupt=1 baro=0
+  t= 47.0  p=101385.320 Pa  h=  -5.022 m  p_z=  -4.083  b_baro=  -1.051  zupt=1 baro=0
+  t= 48.0  p=101386.242 Pa  h=  -5.099 m  p_z=  -4.083  b_baro=  -1.051  zupt=1 baro=0
+  t= 49.0  p=101386.266 Pa  h=  -5.101 m  p_z=  -4.083  b_baro=  -1.051  zupt=1 baro=0
+  t= 50.0  p=101386.008 Pa  h=  -5.080 m  p_z=  -4.084  b_baro=  -1.051  zupt=1 baro=0
+  t= 51.0  p=101385.836 Pa  h=  -5.065 m  p_z=  -4.075  b_baro=  -1.050  zupt=1 baro=0
+  t= 52.0  p=101386.102 Pa  h=  -5.087 m  p_z=  -4.057  b_baro=  -1.050  zupt=1 baro=0
+  t= 53.0  p=101384.516 Pa  h=  -4.955 m  p_z=  -4.043  b_baro=  -1.050  zupt=1 baro=0
+  t= 54.0  p=101383.891 Pa  h=  -4.903 m  p_z=  -4.034  b_baro=  -1.050  zupt=1 baro=0
+  t= 55.0  p=101385.891 Pa  h=  -5.070 m  p_z=  -4.034  b_baro=  -1.050  zupt=1 baro=0
+  t= 56.0  p=101385.297 Pa  h=  -5.020 m  p_z=  -4.034  b_baro=  -1.050  zupt=1 baro=0
+  t= 57.0  p=101385.820 Pa  h=  -5.064 m  p_z=  -4.028  b_baro=  -1.050  zupt=1 baro=0
+  t= 58.0  p=101384.469 Pa  h=  -4.951 m  p_z=  -4.014  b_baro=  -1.050  zupt=1 baro=0
+  t= 59.0  p=101385.328 Pa  h=  -5.023 m  p_z=  -4.008  b_baro=  -1.050  zupt=1 baro=0

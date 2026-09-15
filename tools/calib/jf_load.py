@@ -200,11 +200,23 @@ CH_122 = dict(CH_117)
 CH_122.update({'ekf_mag_gate': 117, 'ekf_mag_bh': 118, 'ekf_mag_r_deg': 119,
                'ekf_mag_used': 120, 'ekf_p_yy': 121})
 
+CH_127 = dict(CH_122)
+CH_127.update({'ekf_prop_ok': 122, 'ekf_f_ok': 123, 'ekf_prop_row': 124,
+               'ekf_stage': 125, 'ekf_mag_rej': 126, 'ekf_mag_fhb': 127})
+
+CH_133 = dict(CH_127)
+CH_133.update({'ekf_mag_rx': 128, 'ekf_mag_ry': 129, 'ekf_mag_dqx': 130,
+               'ekf_mag_dqy': 131, 'ekf_mag_dqz': 132})
+
+CH_139 = dict(CH_133)
+CH_139.update({'ekf_tilt_dqx': 133, 'ekf_tilt_dqy': 134, 'ekf_tilt_dqz': 135,
+               'ekf_tilt_prx': 136, 'ekf_tilt_pry': 137, 'ekf_tilt_prz': 138})
+
 CH_BY_NCH = {90: CH_92, 92: CH_92, 78: CH_78, 80: CH_80, 112: CH_112, 113: CH_113,
-             115: CH_115, 117: CH_117, 122: CH_122}
+             115: CH_115, 117: CH_117, 122: CH_122, 127: CH_127, 128: CH_127, 133: CH_133, 139: CH_139}
 
 # 默认最新版；读历史记录请用 ch_for(a.shape[1])
-CH = CH_122
+CH = CH_127
 
 
 def ch_for(nch):
@@ -228,6 +240,14 @@ def ch_for(nch):
         return CH_117
     if nch == 122:
         return CH_122
+    if nch == 127:
+        return CH_127
+    if nch == 128:
+        return CH_127
+    if nch == 133:
+        return CH_133
+    if nch == 139:
+        return CH_139
     if 0 < nch <= 92:
         return CH_92
     raise KeyError("未知帧长 %d 通道；已知 78/80/112/113 与所有 <=92 的历史版" % nch)
@@ -345,3 +365,22 @@ if __name__ == '__main__':
     for fn in sys.argv[1:]:
         a = load_jf(fn, verbose=True)
         print("  首帧 q=%s acc=%s" % (a[0, :4], a[0, 4:7]))
+
+# ---- ★VER=78 起：148 列（新增 4 个"罗盘量"）----
+# 128 mag_rx / 129 mag_ry / 130 mag_vx / 131 mag_vy / 132 mag_v0x / 133 mag_v0y
+# 134 mag_yawpre / 135..137 mag_dqx,dqy,dqz / 138..140 tilt_dq{x,y,z}
+# 141..143 tilt_pr{x,y,z} / 144..147 mag_cmp_{thm,thp,amn,mhn}
+CH_148 = dict(CH_127)
+CH_148.update({'ekf_mag_rx': 128, 'ekf_mag_ry': 129,
+               'ekf_mag_vx': 130, 'ekf_mag_vy': 131,
+               'ekf_mag_v0x': 132, 'ekf_mag_v0y': 133,
+               'ekf_mag_yawpre': 134,
+               'ekf_mag_dqx': 135, 'ekf_mag_dqy': 136, 'ekf_mag_dqz': 137,
+               'ekf_tilt_dqx': 138, 'ekf_tilt_dqy': 139, 'ekf_tilt_dqz': 140,
+               'ekf_tilt_prx': 141, 'ekf_tilt_pry': 142, 'ekf_tilt_prz': 143,
+               'mag_cmp_thm': 144,   # 罗盘实测航向(度)
+               'mag_cmp_thp': 145,   # 罗盘预测航向(度)
+               'mag_cmp_amn': 146,   # 姿态"上"与加计夹角(度)
+               'mag_cmp_mhn': 147})  # 重力法平面内磁场模长
+CH_BY_NCH[148] = CH_148
+CH = CH_148

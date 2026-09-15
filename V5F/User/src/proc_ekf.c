@@ -83,7 +83,9 @@ static uint8_t  s_origin_ok;
 static uint8_t  s_F_ok;
 static uint8_t  s_prop_row;
 static uint8_t  s_stage;              /* ½×¶Î»ú 0..22 */
-static uint8_t  s_prop_ok;            /* ±¾ÖÜÆÚµÄĞ­·½²î´«²¥ÊÇ·ñÒÑÍê³É£¨µÚÒ»ÖÜÆÚÃ»ÓĞ£© */
+static uint8_t  s_prop_ok;
+static uint8_t  s_pub_row;      /* ¡ïVER=48 ÇåÁãÇ°µÄ s_prop_row ¿ìÕÕ£¨¹©ÉÏ±¨£©*/
+static uint8_t  s_pub_stage;    /* ¡ïVER=48 ÇåÁãÇ°µÄ s_stage ¿ìÕÕ£¨¹©ÉÏ±¨£©*/            /* ±¾ÖÜÆÚµÄĞ­·½²î´«²¥ÊÇ·ñÒÑÍê³É£¨µÚÒ»ÖÜÆÚÃ»ÓĞ£© */
 static uint8_t  s_rej[5];             /* ¸÷µÀ¹Û²âÁ¬Ğø±» chi2 ÌŞ³ıµÄ´ÎÊı£¨ÌÓÍÑ·§ÓÃ£©£º
                                        * 0=ÖØÁ¦/ÇãĞ± 1=ËÙ¶È 2=ÆøÑ¹ 3=´ÅÆ«º½ 4=Î»ÖÃ */
 static float    s_dt_e;
@@ -100,6 +102,18 @@ static float    s_alin_g;             /* ±¾ÖÜÆÚ |a_lin|£¨»úÌåÏµ±ÈÁ¦È¥µôÁãÆ«ºóµÄÄ
                                        * ÕûÁ÷²»È·¶¨¶È°´ËüËõ·Å£¬½ø Q_tt */
 static uint8_t  s_sat;                /* ±¾ÖÜÆÚ¼û¹ı¼Ó¼ÆÏ÷¶¥Ö¡ */
 static uint8_t  s_chi2_soft;
+static float    s_mag_fhb;
+static float    s_mag_rx, s_mag_ry;
+static float    s_mag_vx, s_mag_vy;      /* ¡ïVER=67 Í¶Ó°ÏòÁ¿ v */
+static float    s_mag_v0x, s_mag_v0y;    /* ¡ïVER=67 Ä£ĞÍ v0 */
+static float    s_mag_yawpre;            /* ¡ïVER=67 ĞŞÕıÇ° EKF Æ«º½(¶È) */      /* ¡ïVER=46 ¶şÎ¬ĞÂÏ¢·ÖÁ¿ */
+static float    s_mag_dqx, s_mag_dqy, s_mag_dqz;
+static float    s_mag_cmp_thm, s_mag_cmp_thp;   /* ¡ïVER=78 ÂŞÅÌ£ºÊµ²â/Ô¤²âº½Ïò(¶È) */
+static float    s_mag_cmp_amn, s_mag_cmp_mhn;   /* ¡ïVER=78 ÂŞÅÌ£º±ÈÁ¦Ä£³¤(g) / ·¨Æ½ÃæÄÚ´Å³¡Ä£³¤ */
+static float    s_tilt_dqx, s_tilt_dqy, s_tilt_dqz;  /* ¡ïVER=50 M6 Êµ¼Ê×¢ÈëµÄ×ËÌ¬ĞŞÕı(¶È) */
+static float    s_tilt_prx, s_tilt_pry, s_tilt_prz;
+static uint8_t  s_mag_anchor;   /* ¡ïVER=51 Æô¶¯Ò»´Î¿ìËÙÆ«º½¶ÔÆëÊÇ·ñÒÑ×ö */  /* ¡ïVER=50 M6 Ô¤²âÖØÁ¦·½Ïò(»úÌåÏµ) */  /* ¡ïVER=46 ±¾´ÎÊµ¼Ê×¢ÈëµÄ×ËÌ¬ĞŞÕı(¶È) */      /* ¡ïVER=45 »úÌåÏµË®Æ½Õ¼±È = ÏòÁ¿ÓĞĞ§ĞÔÅĞ¾İ */
+static float    s_boot_t;       /* ¡ïVER=62 ¿ª»ú¼ÆÊ±(s)£¬ÓÃÓÚÕû½Ç¶ÔÆëµÄÊ±¼ä´° */
 static uint8_t  s_mag_gate;           /* µÚ 8 ²½µÄÍâ²¿ÃÅ½áÂÛ£¨¹©ÉÏ±¨£©*/
 static uint8_t  s_mag_used;           /* ±¾ÖÜÆÚ M7 ÊÇ·ñÕæµÄ¸üĞÂÁË */
 static float    s_mag_bh;             /* Bh/|B| ËÀµãÅĞ¾İÁ¿ */
@@ -115,6 +129,7 @@ static uint8_t  s_bh_fill;
 static uint16_t s_mn_bad;             /* »ùÏßÁ¬Ğø´ò²»¿ªµÄ´ÎÊı£¨×ÔÓúÓÃ£©*/
 static float    s_mag_dth[3];         /* ×Ô´ÅÁ¦¼Æ²ÉÑùÒÔÀ´µÄ**»úÌå**×ª¶¯Á¿ rad£¨²¹Ñù±¾³Â¾É£© */
 static uint32_t s_ist_last;
+static uint32_t s_mag_cnt_upd;        /* ¡ïVER=73 ÉÏÒ»´ÎÕæÕıÊ©¼Ó´Å¹Û²âÊ±µÄ ist Ñù±¾ºÅ */
 
 static uint64_t s_last_tick;
 
@@ -483,7 +498,13 @@ static void ekf_m6_tilt(const volatile v5f_hold_t *h, const volatile v5f_proc_ga
             }
         }
     }
-    if (st == 0u) s_gate_bits |= V5F_EKF_GB_TILT;
+    s_tilt_prx = pr[0]; s_tilt_pry = pr[1]; s_tilt_prz = pr[2];   /* ¡ïVER=50 */
+    if (st == 0u) {
+        s_gate_bits |= V5F_EKF_GB_TILT;
+        s_tilt_dqx = s_dx[IX_Q + 0] * RAD2DEG;
+        s_tilt_dqy = s_dx[IX_Q + 1] * RAD2DEG;
+        s_tilt_dqz = s_dx[IX_Q + 2] * RAD2DEG;
+    }
 }
 
 /* M5 Èí ZUPT£¨3 Î¬£© */
@@ -569,79 +590,212 @@ static void ekf_m3_baro(const volatile v5f_proc_gate_t *gate)
 /* M7 ´ÅÆ«º½£¨1 Î¬£¬Ö»¹ÒµÚ 8 Ïî£© */
 static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gate)
 {
-    float R[1], r[1], Rt[3][3], Bn[3], mf[3], hh;
+    float R[1], r[1], rg[2], Rt[3][3], Bn[3], mf[3], ab[3], mh[3], xv[3], crs3[3];
+    float fp[3], mh2[3], crs4[3], b0v[3], up_nav[3];
+    float fhb2, ci, b0x, b0y, b0z, sig2;
+    float dpar, mhn, xvn, thm, thp, psih, dp2, mh2n, an2, cc;
     uint8_t st;
     uint32_t i;
 
     if (!V5F_EKF_YAW_OBS_EN || !gate->ekf_mag_yaw) return;
     for (i = 0u; i < 3u; i++) mf[i] = h->mag.f[i];
-    /* ²¹Ñù±¾³Â¾É£ºIST Ô¼ 187 Hz£¬2229 dps ÏÂÒ»¸öÑù±¾×î¶à³Â¾É 63 ¶È¡£
-     * v(t) = Exp(-dth) v(t_s)£¬dth = ×Ô²ÉÑùÒÔÀ´µÄ**»úÌå**×ª¶¯Á¿¡£ */
+    /* ¡ïVER=72 Á¿¸ÙÊØÎÀ */
+    {
+        float f2 = mf[0]*mf[0] + mf[1]*mf[1] + mf[2]*mf[2];
+        if (f2 < 0.25f || f2 > 2.25f) {
+            if (s_rej[3] < 250u) s_rej[3]++;
+            s_gate_bits |= V5F_EKF_GB_CHI2;
+            return;
+        }
+    }
+    fhb2 = h->mag.f[0]*h->mag.f[0] + h->mag.f[1]*h->mag.f[1];
+    s_mag_fhb = sqrtf(fhb2);
+    /* ¡ïVER=45 ²¹Ñù±¾³Â¾É */
     {
         float am = sqrtf(s_mag_dth[0]*s_mag_dth[0] + s_mag_dth[1]*s_mag_dth[1]
                        + s_mag_dth[2]*s_mag_dth[2]);
         if (am > 1e-4f) {
             float half = 0.5f * am;
-            float s = sinf(half) / am;
+            float sc = sinf(half) / am;
             float dq[4];
+            float tmp[3];
             dq[0] = cosf(half);
-            dq[1] = -s * s_mag_dth[0];
-            dq[2] = -s * s_mag_dth[1];
-            dq[3] = -s * s_mag_dth[2];
-            {
-                float tmp[3];
-                q_rot_vec(dq, mf, tmp);
-                mf[0] = tmp[0]; mf[1] = tmp[1]; mf[2] = tmp[2];
-            }
+            dq[1] = -sc * s_mag_dth[0];
+            dq[2] = -sc * s_mag_dth[1];
+            dq[3] = -sc * s_mag_dth[2];
+            q_rot_vec(dq, mf, tmp);
+            mf[0] = tmp[0]; mf[1] = tmp[1]; mf[2] = tmp[2];
         }
     }
+    ci  = 1.0f / sqrtf(1.0f + V5F_EKF_DIP_TAN * V5F_EKF_DIP_TAN);
+    b0x = ci * sinf(V5F_MAG_DECL_RAD);
+    b0y = ci * cosf(V5F_MAG_DECL_RAD);
+    b0z = -V5F_EKF_DIP_TAN * ci;
+    sig2 = V5F_EKF_MAG_SIG_RAD * V5F_EKF_MAG_SIG_RAD;
+
+    /* ---- ¼¸ºÎÕï¶Ï£¨µ¼º½ÏµË®Æ½¶şÎ¬²Ğ²î£»¶¨Òå²»±ä£¬¹©ÈÕÖ¾ÓëÕû½Ç¶ÔÆëÓÃ£© ---- */
     q_to_R(&s_x[IX_Q], Rt);
-    rot_bn(Rt, mf, Bn);                    /* B = R(q) f -> µ¼º½ÏµµØ´Å·½Ïò */
-    hh = atan2f(Bn[0], Bn[1]);             /* µØ´ÅË®Æ½·ÖÁ¿·½Î»£¨¶«/±±£©£¬Ó¦ºãµÈÓÚ D */
-    /* ¡ï ÍêÕûµÄÑÅ¿É±È£ºh = atan2(Bx, By)£¬B = R(q)f£¬dth Îªµ¼º½Ïµ×ËÌ¬Îó²î
-     *   dh/ddx = Bx*Bz/Bh^2,  dh/ddy = By*Bz/Bh^2,  dh/ddz = -1
-     * Ç°Á½ÏîµÄÏµÊı¾ÍÊÇ tan(I_measured) = 2.08£¨Êµ²âÇã½Ç 64.26 ¶È£©¡£
-     * Ô­À´Ö»Ğ´ÁË -1£¬ÓÚÊÇÇã½ÇÎó²î±»**Õû¿é¼Çµ½Æ«º½Í·ÉÏ** -> bg_z ¶¥µ½Ç¯Î»¡¢Æ«º½×ª·É
-     * £¨VER=27/29 Á½´ÎÊµ²â -156 ¶È vs ¾ÉÁ´ +4 ¶È£©¡£²¹ÉÏÖ®ºó£º
-     *   ¡¤ ´Å¹Û²âÍ¬Ê±Ô¼ÊøÇã½Ç£¨ÔË¶¯ÖĞ¶àÒ»¸ö×ËÌ¬²Î¿¼£¬ÕıºÃ²¹ÖØÁ¦¹Û²â¹Ø±ÕµÄ¿Õµµ£©
-     *   ¡¤ R ÀïÄÇ¸ö (2.08*sigma_tilt)^2 ±ØĞë**È¥µô** ¡ª¡ª ñîºÏÒÑ¾­ÔÚ H Àï£¬
-     *     ÁôÔÚ R Àï¾ÍÊÇÖØ¸´¼ÆÊı£¬µÈÓÚ°ÑĞÅÏ¢°×°×ÈÓµô¡£ */
-    {
-        float bh2 = Bn[0]*Bn[0] + Bn[1]*Bn[1];
-        s_mag_bh = sqrtf(bh2);          /* |B| = 1£¨mag_f ÊÇµ¥Î»Ê¸Á¿£©*/
-        /* ¡ï ËÀµãÃÅ£ºË®Æ½·ÖÁ¿Ì«Ğ¡ -> ·½Î»½ÇÎŞ¶¨Òå£¨atan2 ÊıÖµ±¬Õ¨¡¢Çã½ÇÁĞ·Å´óµ½ÎŞÇî£©¡£
-         *   Õı³£Öµ Bh/|B| = cos(53.74 ¶È) = 0.59£¬ÓàÁ¿Ô¼ 2 ±¶¡£¼û v5f_tune.h µÄ×¢ÊÍ¡£ */
-        if (bh2 < V5F_EKF_MAG_BH_MIN * V5F_EKF_MAG_BH_MIN) {
-            if (s_rej[3] < 250u) s_rej[3]++;
-            s_gate_bits |= V5F_EKF_GB_CHI2;
-            return;
-        }
-        H_zero(1u);
-        {
-            s_H[0][6] = Bn[0]*Bn[2]/bh2;
-            s_H[0][7] = Bn[1]*Bn[2]/bh2;
-        }
-        /* Çã½ÇÁĞ±£ÁôÔÚ H Àï£¨ĞÂÏ¢ÒªÄÜÔ¤²âÇãĞ±µÄ¹±Ï×£©£¬µ«ÑÚÂëÖ»·ÅĞĞµÚ 8 Ïî£º
-         * ´Å¹Û²â**²»ĞŞÕıÇã½Ç** ¡ª¡ª ÕâÌ×´ÅÁ¦¼ÆµÄ dip ±ê¶¨Êµ²â²î 10.5 ¶È£¬
-         * ÓÃËüĞŞÇã½Ç»á°Ñ 10 ¶ÈÏµÍ³Îó²î¹à½ø×ËÌ¬£¨VER=34 Êµ²âÆ«º½Æ« 151 ¶È£¬
-         * ¶ø bg Ö»ÓĞ 0.005 dps£¬ËµÃ÷²»ÊÇÁãÆ«ÔÚÇı¶¯£©¡£ */
-        s_H[0][8] = -1.0f;
-        R[0] = V5F_EKF_MAG_SIG_RAD * V5F_EKF_MAG_SIG_RAD;
+    rot_bn(Rt, mf, Bn);
+    s_mag_bh = sqrtf(Bn[0]*Bn[0] + Bn[1]*Bn[1]);
+    s_mag_vx = Bn[0]; s_mag_vy = Bn[1];
+    s_mag_v0x = b0x; s_mag_v0y = b0y;
+    rg[0] = Bn[0] - b0x;
+    rg[1] = Bn[1] - b0y;
+    s_mag_rx = rg[0];
+    s_mag_ry = rg[1];
+    /* ¡ïVER=81 ÒÑÉ¾³ı¼¸ºÎËÀµã BH_MIN£ºËüµÄ´¥·¢Ìõ¼şÊÇ"ÖØÁ¦·¨ÏòÓë´Å±±ÖØºÏ"
+     * £¨¼´µ½ÁËÕæ´Å¼«£©£¬±¾Î³¶È´ÅÇã 64.3 ¶È¡¢Ë®Æ½·ÖÁ¿ºã 0.4333£¬²»¿ÉÄÜ·¢Éú¡£ */
+
+    /* ---- ¡ïVER=80 ÖØÁ¦·¨ÏòÖ±½ÓÓÉ**ÒÑÖª×ËÌ¬**½â³ö ----
+     * a_up = R(q_hat)^T . z_nav = »úÌåÏµÀïµÄ"ÉÏ"¡£
+     * ²»ÔÙÓÃ¼Ó¼Æ£¨ÔË¶¯Ê±Ëü±¥ºÍ£¬Êµ²â |a| µ½ 16.8 g£¬·½ÏòÊÇÀ¬»ø£©£¬
+     * Ò²²»ÔÙ×Ô¼º¹¹Ôì R_tilt¡£²âÁ¿ÓëÔ¤²â¶¼½¨Á¢ÔÚÕâÍ¬Ò»¸ù a_up ÉÏ£¬
+     * ÓÚÊÇÇã½ÇÎó²îÔÚÁ½±ßÒ»ÖÂµØ³öÏÖ£¬Ã»ÓĞ"²âÁ¿ÓÃ¼Ó¼Æ/Ô¤²âÓÃ×ËÌ¬"µÄ²»¶Ô³Æ¡£ */
+    up_nav[0] = 0.0f; up_nav[1] = 0.0f; up_nav[2] = 1.0f;
+    rot_nb(Rt, up_nav, ab);
+    /* ¡ïVER=81 ²»ÔÙÉè"Çã½Ç¿ÉĞÅ"ÃÅ£ºÍ¶Ó°ÖáÈ¡µÄÊÇ**×ËÌ¬×Ô¼º**µÄÖØÁ¦·¨Ïò
+     * a_up = R(q_hat)^T z_nav£¨¶àÂ·¾¶ÈÚºÏµÄ×îÓÅÖµ£©£¬²âÁ¿ÓëÔ¤²â¶¼ÒÑÍ¶µ½¸ÃÆ½ÃæÄÚ£¬
+     * Á½ÏòÁ¿Í¬´¦Ò»¸öÆ½Ãæ£¬Ê§ÅäÖ»ÄÜÊÇÈÆ a_up µÄĞı×ª = Æ«º½´í¡£Çã½Ç´íÔÚÕâÒ»²½
+     * ÒÑ¾­±»Í¶Ó°ÏûµôÁË£¬²»ĞèÒªÔÙÀ´Ò»µÀÃÅ¡£ */
+    /* Õï¶Ï£º×ËÌ¬µÄ"ÉÏ"Óë¼Ó¼Æ·½Ïò¼Ğ½Ç£¨¶ÈÊı£©¡ª¡ª ¹Û²â¿É²»¿ÉĞÅµÄÖ±½Ó¶ÁÊı */
+    an2 = sqrtf(h->imu.accel_g[0]*h->imu.accel_g[0]
+              + h->imu.accel_g[1]*h->imu.accel_g[1]
+              + h->imu.accel_g[2]*h->imu.accel_g[2]);
+    if (an2 > 1e-6f) {
+        cc = (ab[0]*h->imu.accel_g[0] + ab[1]*h->imu.accel_g[1]
+            + ab[2]*h->imu.accel_g[2]) / an2;
+        if (cc >  1.0f) cc =  1.0f;
+        if (cc < -1.0f) cc = -1.0f;
+        s_mag_cmp_amn = acosf(cc) * RAD2DEG;
     }
-    r[0] = wrap_pi(V5F_MAG_DECL_RAD - hh);
-    /* ¡ï Ó²ĞÂÏ¢ÃÅ£¨ÎïÀíÔ¼Êø£¬²»ÊÇµ÷²Î£©£º|r| ³¬¹ı 45 ¶È¾ÍÕûÖ¡¶ªÆú¡£
-     *   Êµ²â°å×Ó¾²Ö¹Ê±³öÏÖ¹ıµ¥ÖÜÆÚ 169 ¶ÈµÄÌø±ä£¨¾ÉÁ´Í¬Ö¡ 0.0000 ¶È£©¡ª¡ª
-     *   2.87 ms ×ª 169 ¶ÈĞèÒª 59000 ¶È/s£¬ÎïÀíÉÏ²»¿ÉÄÜ£¬±ØÈ»ÊÇ»µÑù±¾¡£
-     *   Ä£³¤ÃÅ×¥²»×¡£¨»µÑù±¾Ä£³¤ÈÔÔ¼ 1£©£¬Èí chi2 Ò²×¥²»×¡£¨ÕûÁ÷ÏîÌ§¸ß P Ê¹ S ±ä´ó£©¡£
-     *   ÓÃÓ²ÃÅ + ÔöÒæÉÏÏŞ£»²»ÔÙÓÃ"ÏŞ·ù×´Ì¬"ÄÇÖÖ×ö·¨£¨Ö»»Ø¹ö×´Ì¬²»»Ø¹ö P£¬
-     *   »á°ÑÉÁÏÖ±ä³ÉÃ¿ÖÜÆÚ 17 ¶È/s µÄºãËÙÆ¯ÒÆ£©¡£ */
-    if (fabsf(r[0]) > V5F_EKF_MAG_R_MAX_DEG * DEG2RAD) {
+
+    /* ²âÁ¿´Å³¡ÔÚ·¨Æ½ÃæÄÚµÄ·ÖÁ¿ */
+    dpar = mf[0]*ab[0] + mf[1]*ab[1] + mf[2]*ab[2];
+    mh[0] = mf[0] - dpar*ab[0];
+    mh[1] = mf[1] - dpar*ab[1];
+    mh[2] = mf[2] - dpar*ab[2];
+    mhn = sqrtf(mh[0]*mh[0] + mh[1]*mh[1] + mh[2]*mh[2]);
+    s_mag_cmp_mhn = mhn;
+    /* ²Î¿¼£º»úÌå x ÖáÔÚÍ¬Ò»Æ½ÃæÄÚµÄÍ¶Ó° */
+    xv[0] = 1.0f - ab[0]*ab[0];
+    xv[1] =      - ab[0]*ab[1];
+    xv[2] =      - ab[0]*ab[2];
+    xvn = sqrtf(xv[0]*xv[0] + xv[1]*xv[1] + xv[2]*xv[2]);
+    if (mhn < 1e-3f || xvn < 1e-3f) {
+        if (s_rej[3] < 250u) s_rej[3]++;
+        s_gate_bits |= V5F_EKF_GB_CHI2;
+        return;
+    }
+    crs3[0] = ab[1]*mh[2] - ab[2]*mh[1];
+    crs3[1] = ab[2]*mh[0] - ab[0]*mh[2];
+    crs3[2] = ab[0]*mh[1] - ab[1]*mh[0];
+    thm = atan2f((crs3[0]*xv[0] + crs3[1]*xv[1] + crs3[2]*xv[2]) / (mhn*xvn),
+                 (mh[0]*xv[0] + mh[1]*xv[1] + mh[2]*xv[2]) / (mhn*xvn));
+
+    /* Ô¤²â´Å³¡£ºÍ¬Ò»×ËÌ¬¡¢Í¬Ò»¸ù a_up */
+    b0v[0] = b0x; b0v[1] = b0y; b0v[2] = b0z;
+    rot_nb(Rt, b0v, fp);
+    dp2 = fp[0]*ab[0] + fp[1]*ab[1] + fp[2]*ab[2];
+    mh2[0] = fp[0] - dp2*ab[0];
+    mh2[1] = fp[1] - dp2*ab[1];
+    mh2[2] = fp[2] - dp2*ab[2];
+    mh2n = sqrtf(mh2[0]*mh2[0] + mh2[1]*mh2[1] + mh2[2]*mh2[2]);
+    if (mh2n < 1e-3f) {
+        if (s_rej[3] < 250u) s_rej[3]++;
+        s_gate_bits |= V5F_EKF_GB_CHI2;
+        return;
+    }
+    crs4[0] = ab[1]*mh2[2] - ab[2]*mh2[1];
+    crs4[1] = ab[2]*mh2[0] - ab[0]*mh2[2];
+    crs4[2] = ab[0]*mh2[1] - ab[1]*mh2[0];
+    thp = atan2f((crs4[0]*xv[0] + crs4[1]*xv[1] + crs4[2]*xv[2]) / (mh2n*xvn),
+                 (mh2[0]*xv[0] + mh2[1]*xv[1] + mh2[2]*xv[2]) / (mh2n*xvn));
+    r[0] = wrap_pi(thm - thp);                  /* ²Î¿¼Öá xv ÔÚÁ½Ê½ÀïÏàÏû */
+    s_mag_r = fabsf(r[0]) * RAD2DEG;
+    s_mag_cmp_thm = thm * RAD2DEG;
+    s_mag_cmp_thp = thp * RAD2DEG;
+    {
+        float qw = s_x[IX_Q], qx = s_x[IX_Q+1], qy = s_x[IX_Q+2], qz = s_x[IX_Q+3];
+        psih = atan2f(2.0f*(qw*qz + qx*qy), 1.0f - 2.0f*(qy*qy + qz*qz));
+        s_mag_yawpre = psih * RAD2DEG;
+    }
+
+    /* H Ö»ÓĞÆ«º½Ïî */
+    H_zero(1u);
+    s_H[0][8] = 1.0f;
+
+    /* ¡ïVER=62 ¿ª»ú´°ÄÚÒ»´Î¾«È·½ÇÕû½ÇĞŞÕı£¨ÓÃ¼¸ºÎ²Ğ²î rg£© */
+    if (s_boot_t < V5F_EKF_MAG_ANCHOR_TS) {
+        float n2 = b0x * b0x + b0y * b0y;
+        float dpsi = 0.0f, e0, e1, h2;
+        float qb[4], dq[4], qt[4];
+        uint32_t i2;
+        e0 = sqrtf(rg[0] * rg[0] + rg[1] * rg[1]);
+        if (n2 > 1e-6f) {
+            float crs = b0x * rg[1] - b0y * rg[0];
+            float dt2 = b0x * rg[0] + b0y * rg[1] + n2;
+            dpsi = atan2f(crs, dt2);
+        }
+        if (dpsi >  3.14159265f) dpsi =  3.14159265f;
+        if (dpsi < -3.14159265f) dpsi = -3.14159265f;
+        for (i2 = 0u; i2 < 4u; i2++) qb[i2] = s_x[IX_Q + i2];
+        h2 = 0.5f * dpsi;
+        dq[0] = cosf(h2); dq[1] = 0.0f; dq[2] = 0.0f; dq[3] = sinf(h2);
+        q_mul(dq, &s_x[IX_Q], qt);
+        for (i2 = 0u; i2 < 4u; i2++) s_x[IX_Q + i2] = qt[i2];
+        q_norm(&s_x[IX_Q]);
+        q_to_R(&s_x[IX_Q], Rt);
+        rot_bn(Rt, mf, Bn);
+        {
+            float rx2 = Bn[0] - b0x, ry2 = Bn[1] - b0y;
+            e1 = sqrtf(rx2 * rx2 + ry2 * ry2);
+        }
+        if (e1 > e0) {
+            for (i2 = 0u; i2 < 4u; i2++) s_x[IX_Q + i2] = qb[i2];
+            h2 = -0.5f * dpsi;
+            dq[0] = cosf(h2); dq[1] = 0.0f; dq[2] = 0.0f; dq[3] = sinf(h2);
+            q_mul(dq, &s_x[IX_Q], qt);
+            for (i2 = 0u; i2 < 4u; i2++) s_x[IX_Q + i2] = qt[i2];
+            q_norm(&s_x[IX_Q]);
+            dpsi = -dpsi;
+        }
+        s_mag_anchor = 1u;
+        s_mag_used = 1u;
+        s_mag_dqx = 0.0f; s_mag_dqy = 0.0f; s_mag_dqz = dpsi * RAD2DEG;
+        s_gate_bits |= V5F_EKF_GB_MAG;
+        rg[0] = 0.0f; rg[1] = 0.0f;
+        s_mag_rx = 0.0f; s_mag_ry = 0.0f;
+        s_mag_r = 0.0f;
+        return;
+    }
+
+    R[0] = sig2;
+    /* ¡ïVER=65/75 Î»ÒÆËÀÇø£¨VER=75 µÄ³£Á¿ÊÇ 0.0f£¬´ËĞĞµ±Ç°²»ÉúĞ§£© */
+    if (s_mag_r < V5F_EKF_MAG_DEAD_DEG) {
+        return;
+    }
+    if (s_mag_r > V5F_EKF_MAG_R_MAX_DEG) {
         if (s_rej[3] < 250u) s_rej[3]++;
         s_gate_bits |= V5F_EKF_GB_CHI2;
     } else {
-        st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
+        /* ¡ïVER=73 Ö»ÔÚ´ÅÑù±¾ÕæµÄ¸üĞÂÊ±Ê©¼ÓÒ»´Î */
+        {
+            uint32_t icm = g_shm ? g_shm->ist.hdr.cnt : 0u;
+            if (icm == s_mag_cnt_upd) {
+                s_mag_dqx = 0.0f; s_mag_dqy = 0.0f; s_mag_dqz = 0.0f;
+                return;
+            }
+            s_mag_cnt_upd = icm;
+        }
+        st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG_NOSW, &s_nis[4], &s_rej[3],
                         0x0100u, V5F_EKF_MAG_K_MAX);
-        if (st == 0u) s_gate_bits |= V5F_EKF_GB_MAG;
+        if (st == 0u) {
+            s_gate_bits |= V5F_EKF_GB_MAG;
+            s_mag_used = 1u;
+            s_mag_dqx = s_dx[IX_Q + 0] * RAD2DEG;
+            s_mag_dqy = s_dx[IX_Q + 1] * RAD2DEG;
+            s_mag_dqz = s_dx[IX_Q + 2] * RAD2DEG;
+        }
     }
 }
 
@@ -837,6 +991,10 @@ static void ekf_prop_row(void)
             else if (row >= 9u  && row <= 11u) qd += V5F_EKF_SIG_BA_RW * V5F_EKF_SIG_BA_RW * dtq;
             else if (row >= 12u && row <= 14u) qd += V5F_EKF_SIG_BG_RW * V5F_EKF_SIG_BG_RW * dtq;
             else if (row == 15u)               qd += V5F_EKF_SIG_BARO_RW * V5F_EKF_SIG_BARO_RW * dtq;
+            /* ¡ïVER=73 Æ«º½·½²îÏÂÏŞ£º²»¼ÓÕâÒ»Ïî£¬M7 µÄ k_cap ÏŞ·ù¸üĞÂ»á°Ñ
+             * P[8][8] Ö¸Êı³é¸É£¨Ï÷¼õ ¡Ø P£©-> Æ«º½ÔöÒæ¶öËÀ -> »·Â·Ê§Ğ§¡£
+             * ¼û v5f_tune.h V5F_EKF_Q_YAW_MIN µÄÊµ²âÊı¾İÓëÈ¡ÖµÒÀ¾İ¡£ */
+            if (row == 8u) qd += V5F_EKF_Q_YAW_MIN;
             s += qd;
         }
         s_Pn[row][j] = s;
@@ -852,6 +1010,11 @@ static void ekf_finalize(void)
         for (j = i; j < EKF_N; j++) {
             float a = 0.5f * (s_Pn[i][j] + s_Pn[j][i]);
             if (i == j && a < V5F_EKF_P_FLOOR) a = V5F_EKF_P_FLOOR;
+            /* ¡ïVER=75 Æ«º½·½²îÏÂÏŞ£ºM7 µÄ k_cap ÏŞ·ù¸üĞÂ¶Ô P[8][8] µÄÏ÷¼õ ¡Ø P£¬
+             * ÊÇÖ¸ÊıËúÏİ£¬Êµ²â»á±»Ï÷µ½ 1e-12 Ê¹Æ«º½ÔöÒæ¹éÁã¡¢»·Â·³¹µ×Ê§È¥Á¦Æø
+             * £¨VER=74 Â¼ÖÆ£º¾²ÖÃÖĞ²Ğ²î´Ó 21 ¶ÈÕÇµ½ 49 ¶È£¬P Ñø»ØÀ´²ÅÀ­»Ø£©¡£
+             * ÏÂÏŞÈ¡´ÅÁ¦¼Æ×ÔÉí²âÁ¿ÔëÉùµÄÆ½·½£¬±£Ö¤ K ºãÔÚ k_cap ÉÏÏŞ¡£ */
+            if (i == 8u && j == 8u && a < V5F_EKF_YAW_P_MIN) a = V5F_EKF_YAW_P_MIN;
             s_Pn[i][j] = a;
             s_Pn[j][i] = a;
         }
@@ -886,6 +1049,32 @@ static void ekf_publish(volatile v5f_hold_t *h)
     h->ekf.mag_bh     = s_mag_bh;
     h->ekf.mag_r_deg  = s_mag_r;
     h->ekf.p_yy       = s_Pn[8][8];
+     h->ekf.prop_ok = (uint8_t)s_prop_ok;
+     h->ekf.f_ok = (uint8_t)s_F_ok;
+      h->ekf.prop_row = s_pub_row;
+      h->ekf.stage = s_pub_stage;
+     h->ekf.mag_rej = s_rej[3];
+      h->ekf.mag_fhb = s_mag_fhb;
+       h->ekf.mag_rx = s_mag_rx;
+       h->ekf.mag_ry = s_mag_ry;
+        h->ekf.mag_vx = s_mag_vx;
+        h->ekf.mag_vy = s_mag_vy;
+        h->ekf.mag_v0x = s_mag_v0x;
+        h->ekf.mag_v0y = s_mag_v0y;
+        h->ekf.mag_yawpre = s_mag_yawpre;
+       h->ekf.mag_dqx = s_mag_dqx;
+       h->ekf.mag_dqy = s_mag_dqy;
+       h->ekf.mag_dqz = s_mag_dqz;
+       h->ekf.mag_cmp_thm = s_mag_cmp_thm;
+       h->ekf.mag_cmp_thp = s_mag_cmp_thp;
+       h->ekf.mag_cmp_amn = s_mag_cmp_amn;
+       h->ekf.mag_cmp_mhn = s_mag_cmp_mhn;
+        h->ekf.tilt_dqx = s_tilt_dqx;
+        h->ekf.tilt_dqy = s_tilt_dqy;
+        h->ekf.tilt_dqz = s_tilt_dqz;
+        h->ekf.tilt_prx = s_tilt_prx;
+        h->ekf.tilt_pry = s_tilt_pry;
+        h->ekf.tilt_prz = s_tilt_prz;
     for (i = 0u; i < 3u; i++) h->ekf.a_nav[i] = s_a_nav[i];
     h->ekf.gate_bits     = s_gate_bits;
     h->ekf.sigma_yaw_deg = s_sig[0];
@@ -1020,6 +1209,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             s_alin_g = 0.0f; s_sat = 0u;
             s_mag_dth[0] = s_mag_dth[1] = s_mag_dth[2] = 0.0f;
             s_bh_idx = 0u; s_bh_fill = 0u;
+            s_mag_anchor = 0u;   /* ¡ïVER=51 ÖØĞÂ¶ÔÆëºóÔÊĞíÔÙ×öÒ»´Î¿ìËÙÆ«º½¶ÔÆë */
             for (i = 0u; i < 5u; i++) { s_nis[i] = 0.0f; s_rej[i] = 0u; }
             s_gate_bits = 0u;
             s_sig[0] = V5F_EKF_P0_YAW_RAD * RAD2DEG;
@@ -1051,7 +1241,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
     {
         uint32_t ic = g_shm ? g_shm->ist.hdr.cnt : 0u;
         if (ic != s_ist_last) {
-            uint32_t nq;
             s_ist_last = ic;
             s_mag_dth[0] = 0.0f; s_mag_dth[1] = 0.0f; s_mag_dth[2] = 0.0f;
         }
@@ -1091,7 +1280,20 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
     if (s_stage < V5F_EKF_DECIM) {
         /* Ğ­·½²î£º±¾Ö¡´«²¥Ò»ĞĞ¡£16 ĞĞÕıºÃÌ¯ÔÚ stage 0..15 Õâ 16 Ö¡Àï£¬
          * µ½ stage 16 Ê±ÒÑ¾­´«²¥Íê±Ï£¬Ëæºó 7 Ö¡×ö¹Û²â¸üĞÂÓëÊÕÎ²¡£ */
-        if (s_F_ok && s_prop_row < EKF_N) ekf_prop_row();
+        /* ¡ïVER=44 ĞŞÕı×ÔËø£ºEKF_N(17) > V5F_EKF_DECIM(16)¡£
+         * Ô­À´ 16 Ö¡×î¶àÍÆ 16 ĞĞ -> s_prop_row ÓÀÔ¶µ½²»ÁË EKF_N
+         * -> s_prop_ok ºã 0 -> ËùÓĞ¹Û²â(M6/M5/M7/M1M2/M4)Óë ekf_finalize()
+         *   È«²¿±»Ìø¹ı£¬EKF ÍË»¯³É´¿ÍÓÂİ»ı·ÖÆ÷
+         *   £¨Êµ²â VER=44/47/48£ºmag_r ºã 0¡¢mag_used 0%¡¢chi2 100%¡¢
+         *    gate_bits Ö»ÓĞ aligned|step|chi2£©¡£Õâ¾ÍÊÇµØ´Å²»Æô¶¯µÄÕæÒò¡£
+         * Ç° 15 Ö¡ÈÔ¸÷ÍÆ 1 ĞĞ£¨ISR ¸ºÔØ¾ùÌ¯£©£¬×îºóÒ»Ö¡°ÑÓàÏÂµÄĞĞ²¹Íê¡£*/
+        if (s_F_ok) {
+            if (s_stage == V5F_EKF_DECIM - 1u) {
+                while (s_prop_row < EKF_N) ekf_prop_row();
+            } else if (s_prop_row < EKF_N) {
+                ekf_prop_row();
+            }
+        }
         s_stage++;
     } else {
         switch (s_stage) {
@@ -1113,6 +1315,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             for (i = 0u; i < 3u; i++) { s_dth[i] = 0.0f; s_dvb[i] = 0.0f; }
             s_dq[0] = 1.0f; s_dq[1] = 0.0f; s_dq[2] = 0.0f; s_dq[3] = 0.0f;
             s_dt_e = 0.0f;
+            s_pub_row = (uint8_t)s_prop_row;   /* ¡ïVER=48 ÏÈ¿ìÕÕÔÙÇåÁã */
             s_prop_row = 0u;
             break;
         case 17u:
@@ -1171,6 +1374,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             if (s_gate_bits & ~(V5F_EKF_GB_ALIGN | V5F_EKF_GB_ORIGIN)) {
                 s_gate_bits |= V5F_EKF_GB_STEP;
             }
+            s_pub_stage = (uint8_t)s_stage;   /* ¡ïVER=48 ÏÈ¿ìÕÕÔÙÇåÁã */
             s_stage = 0u;
             ekf_publish(h);
             break;
@@ -1182,6 +1386,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
     s_pos_wait  += dt;
     s_alt_wait  += dt;
     s_baro_wait += dt;
+    s_boot_t += dt;      /* ¡ïVER=62 ¿ª»ú¼ÆÊ± */
     /* ¶àÆÕÀÕÖ±Á÷Æ«ÖÃÒ»½×Ç£Òı£ºÃÅ = ÉÏÒ»Ö¡µÄ ZUPT ÃÅ£¨ÍâÉú£©£¬ÓëÍÓÂİÁãÆ«Ç£ÒıÍ¬¹¹ */
     if (gate->ekf_zupt && h->gps_rmc.status == (uint8_t)'A') {
         float a = dt / V5F_EKF_DOP_TAU_S;

@@ -366,7 +366,7 @@ static void hold_poll(void)
  *         会话 6.1~6.7%，整段被外部磁源覆盖时可达 1.4~2.9。
  *         它也把"是磁力计坏了还是环境坏了"分开：|y| 偏但方向对 = 环境；
  *         方向也乱 = 磁力计或标定。 */
-#define JF_CH_NUM     122u   /* **运行时**实际写入的列数。不是估的：tools/calib/count_cols.py
+#define JF_CH_NUM     148u   /* **运行时**实际写入的列数。不是估的：tools/calib/count_cols.py
                               * 逐行数 ch[c++] 得到静态 114，减掉 DRDY 间隔那条 if/else
                               * 链的 2 个未执行分支 = 112。ch[] 是栈上数组，多写一格就是
                               * 栈踩踏而编译器一个字都不会说 —— 改列必须用那个脚本复核。*/
@@ -658,6 +658,32 @@ static void justfloat_report(void)
     ch[c++] = g_v5f_hold.ekf.mag_r_deg;
     ch[c++] = (float)g_v5f_hold.ekf.mag_used;
     ch[c++] = g_v5f_hold.ekf.p_yy;
+     ch[c++] = (float)g_v5f_hold.ekf.prop_ok;   /* VER=44 prop_ok */
+     ch[c++] = (float)g_v5f_hold.ekf.f_ok;   /* VER=44 f_ok */
+     ch[c++] = (float)g_v5f_hold.ekf.prop_row;   /* VER=44 prop_row */
+     ch[c++] = (float)g_v5f_hold.ekf.stage;   /* VER=44 stage */
+     ch[c++] = (float)g_v5f_hold.ekf.mag_rej;   /* VER=44 mag_rej */
+      ch[c++] = g_v5f_hold.ekf.mag_fhb;   /* VER=45 机体系水平占比 */
+       ch[c++] = g_v5f_hold.ekf.mag_rx;   /* VER=46 */
+       ch[c++] = g_v5f_hold.ekf.mag_ry;   /* VER=46 */
+        ch[c++] = g_v5f_hold.ekf.mag_vx;   /* VER=67 */
+        ch[c++] = g_v5f_hold.ekf.mag_vy;   /* VER=67 */
+        ch[c++] = g_v5f_hold.ekf.mag_v0x;   /* VER=67 */
+        ch[c++] = g_v5f_hold.ekf.mag_v0y;   /* VER=67 */
+        ch[c++] = g_v5f_hold.ekf.mag_yawpre;   /* VER=67 */
+       ch[c++] = g_v5f_hold.ekf.mag_dqx;   /* VER=46 */
+       ch[c++] = g_v5f_hold.ekf.mag_dqy;   /* VER=46 */
+       ch[c++] = g_v5f_hold.ekf.mag_dqz;   /* VER=46 */
+        ch[c++] = g_v5f_hold.ekf.tilt_dqx;   /* VER=50 */
+        ch[c++] = g_v5f_hold.ekf.tilt_dqy;   /* VER=50 */
+        ch[c++] = g_v5f_hold.ekf.tilt_dqz;   /* VER=50 */
+        ch[c++] = g_v5f_hold.ekf.tilt_prx;   /* VER=50 */
+        ch[c++] = g_v5f_hold.ekf.tilt_pry;   /* VER=50 */
+        ch[c++] = g_v5f_hold.ekf.tilt_prz;   /* VER=50 */
+        ch[c++] = g_v5f_hold.ekf.mag_cmp_thm;   /* ★VER=78 罗盘：实测航向(度) */
+        ch[c++] = g_v5f_hold.ekf.mag_cmp_thp;   /* ★VER=78 罗盘：预测航向(度) */
+        ch[c++] = g_v5f_hold.ekf.mag_cmp_amn;   /* ★VER=78 罗盘：比力模长(g) */
+        ch[c++] = g_v5f_hold.ekf.mag_cmp_mhn;   /* ★VER=78 罗盘：法平面内磁场模长 */
 
 
     /* ---- 载荷必须是有限 float（数据有效性；与切帧无关，见下）----
