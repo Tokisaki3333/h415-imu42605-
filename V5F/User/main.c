@@ -70,18 +70,42 @@ int main(void)
             }
         }
 
-        // tim = GetTime64_Us();
-        // if(tim - last_print_tim > 50000)
-        // {
-        //     last_print_tim = tim;
-        //
-        //     /* 经纬度是 10^-7 ° 定标整数，按整数打印；HDOP 是 float，拆成整数与小数两位显示 */
-        //     oled_printf(0, 0, "a%12d", (int)(g_v5f_hold.gps_rmc.lat_e7));
-        //     oled_printf(0, 16, "o%12d", (int)(g_v5f_hold.gps_rmc.lon_e7));
-        //     oled_printf(0, 32, "P%02d S%02d H%02d.%02d",
-        //                 (int)g_v5f_hold.gps_gga.fix_quality, (int)g_v5f_hold.gps_gga.sat_num,
-        //                 (int)g_v5f_hold.gps_gga.hdop,
-        //                 (int)(g_v5f_hold.gps_gga.hdop * 100.0f) % 100);
-        // }
+        /* ---- OLED：磁力有效情况（主循环轮询 10 Hz）----
+         * 与上报无关，纯本地显示；软 I2C 是阻塞的，**绝不能放进 8 kHz 中断**。
+         * 第 1 行：总体判定 + 各门位；第 2~4 行：判据用的原始量。
+         * ★ 五条新判据(S1~S5)落进 v5f_proc_gate 后，把 gate_bits 的对应位解出来
+         *   替换第 4 行的 gc 打印即可，本块结构不用动。 */
+        {
+            static uint64_t s_oled_last;
+            uint64_t ov = GetTime64_Us();
+            if (ov - s_oled_last >= 100000ULL)              /* 10 Hz */
+            {
+                uint8_t mg = g_v5f_hold.ekf.mag_gate;
+                s_oled_last = ov;
+                oled_printf(0,  0, "MAG %s ok%d yaw%d",      /* EKF 口径: 样本有效性 + 牵引门 */
+                            (uint8_t)(g_v5f_hold.mag.ok && g_v5f_hold.ekf.mag_gate) ? "OK "
+                            : ((g_v5f_hold.mag.ok != 0u) ? "GATE" : "BAD "),
+                            (int)g_v5f_hold.mag.ok, (int)g_v5f_hold.ekf.mag_gate);
+                oled_printf(0, 16, "gate%d used%d hold%d",     /* 牵引门 / 是否用了 / 是否暂停 */
+                            (int)mg, (int)g_v5f_hold.ekf.mag_used, (int)g_v5f_hold.ekf.mag_hold);
+                oled_printf(0, 32, "n%6.3f h%5.3f a%5.1f",     /* 归一化模长 / 水平占比 / 加计夹角 */
+                            (double)g_v5f_hold.mag.mag_norm,
+                            (double)g_v5f_hold.ekf.mag_cmp_mhn,
+                            (double)g_v5f_hold.ekf.mag_cmp_amn);
+                oled_printf(0, 48, "r%6.2f sy%5.1f %s",        /* 新息 / 偏航 1sigma / 最终动作 */
+                            (double)g_v5f_hold.ekf.mag_r_deg,
+                            (double)g_v5f_hold.ekf.sigma_yaw_deg,
+                            (uint8_t)(mg && g_v5f_hold.mag.ok) ? "PULL" : "HOLD");
+                {   /* VER=97 陀螺削顶：千分比 + 削顶轴位（3x4 小字库第 5 行 y=56） */
+                    char axs[4];
+                    uint8_t ca = v5f_imu_clip_axis();
+                    axs[0] = ((ca & 1u) != 0u) ? 'X' : '-';
+                    axs[1] = ((ca & 2u) != 0u) ? 'Y' : '-';
+                    axs[2] = ((ca & 4u) != 0u) ? 'Z' : '-';
+                    axs[3] = '\0';
+                    oled_nano_printf(0, 56, "clip%3d/1000 %s", (int)v5f_imu_clip_pm(), axs);
+                }
+            }
+        }
     }
 }

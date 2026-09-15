@@ -95,7 +95,24 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        84u
+#define V5F_FW_VER        100u
+
+/* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
+ * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
+ * 物理上无法再放大档位，所以越界就是硬削顶：FIFO 原始值钉在 +-32767。
+ * 实测 raw_v9（41.9 s 抖动）：10959 帧(3.26%)削顶、36 段、22~127 ms，全部钉在 X 轴
+ * +32767 —— 削顶期间姿态只剩陀螺积分，直接丢掉几十度倾角（实测 86 度，72 s 才回）。
+ * 这里只做检测与记录，不改变任何融合行为；阈值 32700 留 67 LSB 余量。 */
+#define V5F_CLIP_LSB_ABS          32700     /* |原始 LSB| >= 此值判为本轴削顶 */
+#define V5F_CLIP_WIN_N            8000u     /* 统计窗帧数（约 1 s @8.03 kHz） */
+
+/* ---- VER=97 磁样本快照回溯上限（10 ns 计数）--------------------------------
+ * 磁样本 DRDY -> 主循环读出的延迟，实测中位 0.56 ms（p90 0.61 ms）。
+ * 用于把 EKF 里的陀螺积分快照回溯到真正的 DRDY 时刻，钳 5 ms 防异常大值。 */
+#define V5F_MAG_RDAGE_MAX_TICK    500000ULL
+
+#define V5F_CDC_QUAT_ONLY 1u   /* VER=100: CDC(EP2) 只报 EKF 四元数(JustFloat: 4 float + 00 00 80 7F)
+                                * 置 0u 即切回旧 162 通道 JustFloat 日志, 其余一字不动 */
 #define V5F_EKF_EN        1u      /* 阶段 1（S1）已落地：16 维 ESKF 影子模式 */
 #define V5F_DET_AC_EN     1u
 /* GSV 轮次间隔常量在 Common/Common/GPS.c 内定义：那个文件由 V3F 编译，看不到本头。 */
@@ -360,6 +377,11 @@
 #define V5F_MAG_CAL_EN    1u      /* 1 = 应用下面这组标定
                                    * 0 = 直通（只归一化，不做标定也不判门），
                                    *     用于 A/B 对照"标定到底改善了多少" */
+/* ★VER=91 倾角门回到 2 dps（V5F_EKF_TILT_LEV_DPS），VER=89 的 WMAX=61.2 dps 已回退：
+ *   手持运动时加计的切向线加速度不改变 |a|，|am2-1| 门看不见，放宽会让污染进倾角更新。
+ *   V5F_EKF_TILT_WMAX_DPS / AC_ARM_M / AC_ERR_DEG 保留（M6 的 R 项仍用它注明量级）。 */
+/* ★VER=90 磁模长门：**只与常数 1.0 比**，不自愈（基线恒定固化）。标定已把 |f| 归一化
+ *   到 1，场次硬铁变化 = 标定不再匹配安装 -> 重标。此容差即门限。 */
 #define V5F_MAG_ERR_LIM   0.10f   /* |y| 一致性门限：| ||y|| - 1 | 超过它就把
                                    * mag.ok 置 0（判该样本受外部磁源污染）。
                                    * 实测干净会话 |y| 离散 2.0 ~ 4.8%；桌面污染
@@ -368,10 +390,18 @@
 /* y = V5F_MAG_A * raw + V5F_MAG_C （raw 为原始 LSB，不取反）。
  * 做成 _INIT 宏而不是直接放 static const 数组：本表被 v5f_proc.h 广泛 include，
  * 直接放数组会在每个编译单元各生成一份；实体化只在 SPI_rx.c 里做一次。 */
-#define V5F_MAG_A_INIT  { { +2.08949323e-04f, -6.19417513e-03f, -2.26128295e-04f }, \
-                          { -5.83573699e-03f, -2.51671372e-04f, -2.84947620e-04f }, \
-                          { +2.45618031e-04f, +6.66588056e-04f, +6.02697722e-03f } }
-#define V5F_MAG_C_INIT  { +2.74710494e-02f, +2.72699298e-02f, +1.44001944e-02f }
+/* VER=88 mag calib (2024 capture R:\raw_v9.bin, 544208 frames / 67.8 s):
+ * full-sphere: fixture static anchors + 45deg tilt cone + complete flip-over.
+ * free 9-param attitude-aided fit, reference = legacy gyro attitude (per-frame),
+ * soft weight 1/(1+(w/20dps)^2); |y| normalized so median|y| = 1.
+ * direction error vs reference: static 0.369/0.942 deg, dynamic 1.316/3.192 (p50/p90).
+ * NOTE: absolute yaw of A is an UNOBSERVABLE mode (no absolute heading reference in
+ *       the data); firmware boot mag alignment (proc_ekf.c azi/dpsi) absorbs it.
+ * old A_INIT feat.err on this data was static 0.864/1.120 deg. */
+#define V5F_MAG_A_INIT  { { +3.81325625e-05f, -5.66107252e-03f, +2.54619260e-04f }, \
+                          { -5.82530312e-03f, +3.76914590e-04f, -6.94443501e-05f }, \
+                          { +3.71176765e-04f, +9.12383261e-04f, +6.18344879e-03f } }
+#define V5F_MAG_C_INIT  { +2.92853003e-02f, +2.09102037e-02f, +1.88805815e-02f }
 /* ---- 磁力计"自己认为的维度"输出的参数（只读输出，不参与修正） ---- */
 #define V5F_MAG_DECL_DEG   (-7.53f)  /* 磁偏角 D：来源 WMM/IGRF（ArduPilot AP_Declination
                                       * 的 10 度派生表 + 双线性插值）@ 36.23N 120.44E。
@@ -422,7 +452,27 @@
  *   BMP388 保持 OSR x1（0x1C=0x00）、硬件 IIR 关闭（0x1F 从不写，保持 POR 默认），
  *   因为只有这样转换时间才短到能和 IST8310 **流水线**读取。噪声在软件里平均掉。
  * ===================================================================== */
-#define V5F_MAG_YAW_R_DEG      0.5f    /* 磁航向 1sigma（度），准静态+倾斜门后 */
+#define V5F_MAG_YAW_R_DEG      0.5f    /* 磁航向单次采样噪声(1sigma)。
+                                        * ★VER=87 它只用于 YAW_P_MIN 与 R 项基准，
+                                        * **不再**当作磁的可信度（见 MAG_R_DEG）。 */
+/* ★VER=87 磁的**总**航向不确定度（含宏观误差），它决定磁环带宽。
+ * 实测(VER=86 采集, thm - 旧姿态偏航逐段量)：静止段段内 std 0.36~0.5 度；
+ *   运动段段内 std 4.4~14.1 度；段间中位数跳变 +21.6 / -21.7 / +12.4 / +21.1 / -19.0 度；
+ *   总散布 p50 2.37  p90 15.2  p99 26.8  max 69  std 8.4 度。
+ * 用 2.5 度 -> K=P/(P+R)=0.85 -> tau=0.009 s，偏航完全被磁带走（实测拖弗 10~33 度）。
+ * 取 20 度(约 p99)：自洽平衡 sigma_yaw ~3.4 度, tau ~0.28 s。
+ * 注意：**不能**用钳增益去限带宽——那会让 P 与实际增益不一致(VER=84/85 教训)；
+ *       限带宽只能靠 R 说真话。 */
+/* ★VER=98 重定 R 基准与膨胀项输入(口径换了):
+ *  旧口径(VER=86, 剧烈运动里的 thm-旧姿态偏航) 混杂了"旧姿态自身误差 + 手部/环境对场的扰动",
+ *  因此取到 p99 = 20 度。VER=98 改用**干净慢转**标定: 朝北 4x90 度、低干扰、以旧链 att.q 为量尺,
+ *  地磁相对偏航误差 rms 2.81 / max 4.2 度 -> 基准取 3.5 度。
+ *  剧烈运动下地磁自身误差会涨到 4~14 度, 这部分由膨胀项覆盖: sigma_tilt 输入钳到
+ *  V5F_EKF_MAG_TILT_CAP_DEG=10 度(动态段 EKF 实际倾角误差实测 8~10 度, 而 sigma_tilt 被
+ *  整流项 Q 吹到 45~68 度) -> R 由 96~143 度降到 <=21.1 度, 磁增益由 0.0063 回到
+ *  MAG_K_MAX=0.015 钳位(=2.4 倍权限)。不改门、不加死区、EKF 结构不变。 */
+#define V5F_EKF_MAG_R_DEG       3.5f
+#define V5F_EKF_MAG_TILT_CAP_DEG 10.0f   /* VER=98 膨胀项 sigma_tilt 输入上限(度) */
 #define V5F_GPS_POS_R_H_M      4.0f    /* GPS 水平位置 1sigma（m）—— 按 2D RMS 取 */
 #define V5F_GPS_POS_R_V_M      5.5f    /* GPS 垂直位置 1sigma（m）—— 只用做慢速绝对基准 */
 #define V5F_GPS_ALT_R_M        5.5f    /* 同上（单独列出便于上层区分"高度观测"） */
@@ -533,7 +583,7 @@
 #define V5F_EKF_P0_BARO_M        5.0f
 
 /* ---- 观测噪声 R（数值来源都是 I 组的实测值）---- */
-#define V5F_EKF_MAG_SIG_RAD      (V5F_MAG_YAW_R_DEG * 0.017453292f)  /* 0.5 度 */
+#define V5F_EKF_MAG_SIG_RAD      (V5F_MAG_YAW_R_DEG * 0.017453292f)  /* ★VER=87 0.5 度(单次噪声) */
 /* ★VER=75 偏航方差上限下限（rad^2）—— 治"环路增益被抽干"的正解。
  * M7 的 k_cap 限幅更新对 P[8][8] 的削减 ∝ P（S 约等于 |H|^2 P），是指数塌陷；
  * 实测 VER=74：P[8][8] 被削到 P_FLOOR=1e-12（好帧 min 恰为 1.000e-12），
@@ -608,7 +658,23 @@
                                           * ★ 用独立常量，不借 V5F_DET_AC_E_ON：
                                           *   一环一门，改一个不许动另一个。 */
 #define V5F_EKF_TILT_AMAG_TOL    0.06f             /* |a|^2 偏离 1，约等于 |a| 偏离 3% */
-#define V5F_EKF_TILT_LEV_DPS     2.0f
+#define V5F_EKF_TILT_LEV_DPS     2.0f   /* VER=89 起不再进倾角门(见下方 WMAX)，仅留参考 */
+/* ★VER=89 倾角(重力)观测的**转动**判据由物理预算给出，不用拍出来的 2 dps：
+ *   离心项 a_c = w^2 * ARM 使比力方向偏离重力，偏差 = atan(w^2*ARM/g)。
+ *   取 ARM=0.15 m(手到 IMU 的等效力臂)、允许 1.0 度：
+ *     w_max = sqrt(g*tan(1.0deg)/ARM) = sqrt(9.80665*0.017455/0.15)
+ *           = 1.0685 rad/s = 61.2 dps
+ *   实测 VER=87 全场(544208 帧)的代价对比：
+ *     2.0 dps  : grav_ok 全程 33.1%(动段 12.7%)，mag_hold 磁暂停 54.0%
+ *                (关门连续>0.3s 占 59.6%)；a_c 倾角误差 p99 0.003 度。
+ *     61.2 dps : grav_ok 全程 60.1%(动段 48.0%)，磁暂停 7.2%；
+ *                a_c 误差 p99 1.12 度 / 瞬时最大 3.26 度 -> 该项写进 M6 的 R。
+ *   再放宽无益：|am2-1|<0.06 成为新约束，占空比饱和在 62.9%。
+ *   该判据**必须含 omega_z**：离心项对三轴转动都成立（数据：只排除 omega_z
+ *   仅多开 3.4% 的帧，静段 0%）——曾经记的"level 只取 x,y"是错的。 */
+#define V5F_EKF_TILT_AC_ARM_M    0.15f    /* 离心项等效力臂 (m) */
+#define V5F_EKF_TILT_AC_ERR_DEG  1.0f     /* 允许的 a_c 倾角误差 (度) */
+#define V5F_EKF_TILT_WMAX_DPS    61.2f    /* = sqrt(g*tan(1.0deg)/0.15)*RAD2DEG */
 #define V5F_EKF_BARO_WARMUP_S    5.0f
 #define V5F_EKF_BARO_PERIOD_S    0.164f
 /* 气压改为**差值观测**（高通）：只负责补两次绝对基准之间的瞬态。
@@ -650,7 +716,8 @@
 /* 以下两个是旧逃脱阀的常量，已无用，留名以防旧记录对不上 */
 #define V5F_EKF_CHI2_ESCAPE     8u
 #define V5F_EKF_CHI2_ESC_R      9.0f
-#define V5F_EKF_NIS_MAX_MAG     100.0f
+#define V5F_EKF_NIS_MAX_MAG     16.27f  /* ★VER=85 磁恢复 chi2 软加权：1 维观测 NIS=16 约 4sigma，
+                                        * R=(2.5 度)^2 时对应 |r|~10 度。之前用 NOSW=1e9 等于关掉。 */
 /* ★VER=71 地磁专用 nis_max：置极大 = 关闭 chi2 软加权。
  * 实测大残差时软加权把 K 从 0.05 压到 ~0.003，形成自锁；
  * 单步另有 MAG_K_MAX 限幅，不需要软加权。

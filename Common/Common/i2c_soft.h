@@ -10,13 +10,17 @@
 #define I2C_SCL_PIN          GPIO_Pin_12
 #define I2C_SDA_PIN          GPIO_Pin_13
 
-/* I2C 时序常量（单位：10ns） */
-// #define I2C_HALF_10NS         125   // 1.25 µs  (半周期)
-// #define I2C_SETUP_10NS         25   // 0.25 µs  (数据建立)
-// #define I2C_ACK_DELAY_10NS     25   // 0.25 µs  (应答建立，原 5us 缩短)
-#define I2C_HALF_10NS         20    // 170 ns → 约 2.94 MHz
-#define I2C_SETUP_10NS        5     // 50 ns
-#define I2C_ACK_DELAY_10NS    5     // 50 ns
+/* I2C 时序常量（单位：10ns）
+ * ★ 1/10 极限测试（三个时序常量整体 ×10）：20/5/5 实测约 2.94 MHz，而 IST8310
+ *   的 I2C 规格上限是 400 kHz —— 也就是说一直在**超规格约 7 倍**跑。
+ *   本次降到约 294 kHz（落回规格内），用来判定"原始磁读数被压弯"（|raw| 到 2.5 倍、
+ *   方向塌到近竖直 |raw_z|/|raw| -> 1.0）是否由过速 I2C 造成。
+ *   对比指标：全零样本率(个/s)、模长异常率(>25%)、离线方向一致性残差，
+ *   以及免标定判据 |raw_z|/|raw| 是否仍在 0.88 附近而不冲向 1.0。
+ *   注：更早版本曾注释掉的 125/25/25 约等于 400 kHz。 */
+#define I2C_HALF_10NS         200    // 半周期 2000 ns -> 约 294 kHz（原 20 -> 约 2.94 MHz）
+#define I2C_SETUP_10NS        50     // 500 ns（原 50 ns）
+#define I2C_ACK_DELAY_10NS    50     // 500 ns（原 50 ns）
 
 /* BMP388 */
 #define BMP388_DEV7BIT       0x76

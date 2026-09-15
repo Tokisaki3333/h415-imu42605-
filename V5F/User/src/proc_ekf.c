@@ -76,6 +76,7 @@ static float    s_H[3][EKF_N];        /* 观测矩阵（各道观测共用，逐道清零） */
 static float    s_PHt[EKF_N][3];
 static float    s_K[EKF_N][3];
 static float    s_KS[EKF_N][3];
+static float    s_KHP[EKF_N][EKF_N];   /* ★VER=86 K*(H P)，Joseph 形式用 */
 static float    s_dx[EKF_N];
 
 static uint8_t  s_aligned;
@@ -118,16 +119,14 @@ static uint8_t  s_mag_gate;           /* 第 8 步的外部门结论（供上报）*/
 static uint8_t  s_mag_used;           /* 本周期 M7 是否真的更新了 */
 static float    s_mag_bh;             /* Bh/|B| 死点判据量 */
 static float    s_mag_r;              /* M7 新息（度）*/          /* 本周期有观测被软加权（记 bit9）*/
-static float    s_mn_lp;              /* mag_norm 的稳健基线（只跟看起来干净的样本）*/
 static uint8_t  s_mn_ok;              /* 稳健模长门结论（step8 写，step7 下一帧读）*/
-static uint8_t  s_mn_seen;
 /* 气压差值观测的环形缓冲：存 (h_baro, p_z) 历史，取最老的一笔做差分 */
 static float    s_bh_ring[V5F_EKF_BARO_HP_N];
 static float    s_bp_ring[V5F_EKF_BARO_HP_N];
 static uint8_t  s_bh_idx;
 static uint8_t  s_bh_fill;
-static uint16_t s_mn_bad;             /* 基线连续打不开的次数（自愈用）*/
-static float    s_mag_dth[3];         /* 自磁力计采样以来的**机体**转动量 rad（补样本陈旧） */
+static float    s_mag_dth[3];
+static float    s_mag_tilt_bad_s;   /* ★VER=95 磁专用倾角失效累计(与加计倾角门解耦) */         /* 自磁力计采样以来的**机体**转动量 rad（补样本陈旧） */
 static uint32_t s_ist_last;
 static float    s_w_int[3];           /* ★VER=83 永不归零的陀螺角增量积分 int(w dt) (rad) */
 static float    s_w_snap[3];          /* ★VER=83 磁 DRDY 时刻的积分快照 */
@@ -322,6 +321,7 @@ static uint8_t ekf_update(const float *R, uint8_t m, const float *r,
 {
     float S[3][3], Si[3][3];
     float det, nis = 0.0f, s;
+    float s_soft = 1.0f;   /* ★VER=86 chi2 软加权的实际 R 放大倍数 */
     uint32_t i, j, k;
 
     for (i = 0u; i < EKF_N; i++) {
@@ -377,6 +377,7 @@ static uint8_t ekf_update(const float *R, uint8_t m, const float *r,
         for (i = 0u; i < m; i++) {
             for (j = 0u; j < m; j++) Si[i][j] /= sc;
         }
+        s_soft = sc;                     /* ★VER=86 S_eff = soft*S */
         s_chi2_soft = 1u;
         if (rej && *rej < 250u) (*rej)++;
     } else if (rej) {
@@ -403,6 +404,19 @@ static uint8_t ekf_update(const float *R, uint8_t m, const float *r,
     /* ★ 增益上限 k_cap：K 的每一项取绝对值上限。关键：dx 与下面的 P 修正用的是
      * **同一个 K**，所以状态与协方差始终一致 —— 这正是上次"限幅"犯的错
      * （只回滚状态、不回滚 P，形成正反馈，把闪现变成了恒速漂移）。 */
+    /* ★VER=85 去掉 K 的逐元素钳位（用上报数据离线回放验证）：
+     * 钳 K 后协方差收缩退化成 K^2*S（与 P 无关），P 因此有地板：
+     *   实测 sigma_yaw 卡在 54~68 度（回放逐段误差 <=1.1 度）、
+     *   sigma_tilt 卡在 4.4~17 度；不钳时分别收敛到 2.2 度与 ~3.3 度。
+     * 现在：K 保持最优 -> P -= K S K' 就是精确的 (I-KH)P；
+     *        限步改由"钳新息"承担：|r_k| <= k_cap。K<=1 时 dx=K*r 幅度不超过 k_cap，
+     *        所以 k_cap 的物理含义仍是"单次最大修正量"，各调用点取值含义不变。 */
+    /* ★VER=86 恢复 K 的逐元素钳位（限步）。
+     * VER=85 改成钳新息 + 用"最优 K"的公式更新 P 是根本错误：
+     * 实际只提取了极小一部分信息，P 却按全部信息收缩 -> 过度自信。
+     * 实测：sigma_yaw 钉在 2.500 度下界、sigma_tilt 0.21 度，
+     *       而 |新息| p90 27.6 / max 33.8 度 -> 增益塌陷、姿态自由漂。
+     * 正确不变量：P 必须对应"实际用掉的增益"。 */
     if (k_cap > 0.0f) {
         for (i = 0u; i < EKF_N; i++) {
             for (j = 0u; j < m; j++) {
@@ -411,24 +425,36 @@ static uint8_t ekf_update(const float *R, uint8_t m, const float *r,
             }
         }
     }
-    /* dx = K r */
+    /* dx = K r（r 不钳：新息是"我错多少"的唯一信息，钳了就看不见误差） */
     for (i = 0u; i < EKF_N; i++) {
         s = 0.0f;
         for (k = 0u; k < m; k++) s += s_K[i][k] * r[k];
         s_dx[i] = s;
     }
+    /* s_KS = K * S_eff（S_eff = soft*S，chi2 软加权时保持精确） */
     for (i = 0u; i < EKF_N; i++) {
         for (j = 0u; j < m; j++) {
             s = 0.0f;
             for (k = 0u; k < m; k++) s += s_K[i][k] * S[k][j];
-            s_KS[i][j] = s;
+            s_KS[i][j] = s * s_soft;
         }
     }
+    /* s_KHP = K (H P) = K * PHt' */
+    for (i = 0u; i < EKF_N; i++) {
+        for (j = 0u; j < EKF_N; j++) {
+            s = 0.0f;
+            for (k = 0u; k < m; k++) s += s_K[i][k] * s_PHt[j][k];
+            s_KHP[i][j] = s;
+        }
+    }
+    /* Joseph: P <- P - KHP - KHP' + K S_eff K'
+     * K 取最优时恰好退化为 P - K S K'（=原公式），
+     * K 被钳时则是对该 K 精确的后验协方差 -> 不会过度自信。 */
     for (i = 0u; i < EKF_N; i++) {
         for (j = 0u; j < EKF_N; j++) {
             s = 0.0f;
             for (k = 0u; k < m; k++) s += s_KS[i][k] * s_K[j][k];
-            s_Pn[i][j] -= s;
+            s_Pn[i][j] += s - s_KHP[i][j] - s_KHP[j][i];
         }
     }
     ekf_inject(s_dx);
@@ -480,7 +506,18 @@ static void ekf_m6_tilt(const volatile v5f_hold_t *h, const volatile v5f_proc_ga
         }
     }
     for (i = 0u; i < 9u; i++) R[i] = 0.0f;
-    R[0] = R[4] = R[8] = V5F_EKF_TILT_SIG_RAD * V5F_EKF_TILT_SIG_RAD;
+    /* ★VER=89 诚实 R：把离心项 a_c = w^2*ARM 造成的比力方向偏差写进 R，而不是靠把
+     *   门收到 2 dps 去回避它(那样实测 grav_ok 只开 33%、磁暂停 54%)。小角度下
+     *   atan(x)=x，故 eac(rad) = level_dps^2*DEG2RAD^2*ARM/g，钳 0.2 rad 防呆。
+     *   level_dps 是 128 帧(16 ms)窗均值，瞬时 w 可能更高，所以这是**下界**估计。 */
+    {
+        float wr  = h->stat.level_dps * DEG2RAD;
+        float eac = wr * wr * V5F_EKF_TILT_AC_ARM_M / V5F_EKF_G_MPS2;
+        float sg;
+        if (eac > 0.2f) eac = 0.2f;
+        sg = V5F_EKF_TILT_SIG_RAD + eac;
+        R[0] = R[4] = R[8] = sg * sg;
+    }
     {
         /* ★ 单周期姿态修正上限（= 重力环的 tau 下限，约 8 s）。
          *   没有它，R=(0.5 度)^2 配 349 Hz 满增益更新，闭环带宽约 100 Hz，
@@ -607,6 +644,12 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     uint8_t st;
     uint32_t i;
 
+    /* ★VER=89 先清零：本函数有 8 条提前返回路径(量纲守卫/几何死点/mh2 守卫/位移死区/
+     *   倾角参考暂停/样本未更新…)，旧版只在其中 2 条里清零，其余把上一周期的值留进
+     *   遥测 —— 实测 mag_dqz 因此长期显示一个并不存在的常量注入(约 0.1745 度/周期，
+     *   0.5 s 累积 60.9 度)，据此曾误判"磁在剧烈段注入 143 度/s"。
+     *   清零放在入口门之前：门关时"本周期磁修正量"本来就是 0，这是事实不是补丁。 */
+    s_mag_dqx = 0.0f; s_mag_dqy = 0.0f; s_mag_dqz = 0.0f;
     if (!V5F_EKF_YAW_OBS_EN || !gate->ekf_mag_yaw) return;
     s_mag_hold = 0u;                    /* ★VER=84 */
     for (i = 0u; i < 3u; i++) mf[i] = h->mag.f[i];
@@ -646,8 +689,12 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
      * tan(dip) = V5F_EKF_DIP_TAN = 2.08，所以 sigma_tilt 会以 2.08 倍混进偏航新息。 */
     s_tilt_sig_deg = sqrtf(s_P[6][6] + s_P[7][7]) * RAD2DEG;
     {
-        float rb = V5F_EKF_MAG_SIG_RAD * V5F_EKF_MAG_SIG_RAD;
-        float dl = V5F_EKF_DIP_TAN * (s_tilt_sig_deg * DEG2RAD);
+        float mr = V5F_EKF_MAG_R_DEG * DEG2RAD;      /* ★VER=87 总不确定度 */
+        float rb = mr * mr;
+        float stc = s_tilt_sig_deg;                    /* VER=98 膨胀项输入钳位 */
+        float dl;
+        if (stc > V5F_EKF_MAG_TILT_CAP_DEG) stc = V5F_EKF_MAG_TILT_CAP_DEG;
+        dl = V5F_EKF_DIP_TAN * (stc * DEG2RAD);
         float ra = rb + dl * dl;
         if (ra > rb * V5F_EKF_MAG_RSCALE_MAX) ra = rb * V5F_EKF_MAG_RSCALE_MAX;
         sig2 = ra;
@@ -802,7 +849,7 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         /* ★VER=84 倾角参考失效超时 -> 暂停磁更新（并记门位）。
          * 不做这个，磁更新的倾斜行 dx[6:8]=P[6:8,8]*r/S 会在倾角无观测时无界累积；
          * 仿真：30 度磁激励下倾角 52度 -> 1.1度、偏航 20度 -> 0.75度。 */
-        if (s_tilt_bad_s > V5F_EKF_MAG_GT_HOLD_S) {
+        if (s_mag_tilt_bad_s > V5F_EKF_MAG_GT_HOLD_S) {   /* ★VER=95 解耦后的判据 */
             s_mag_hold = 1u;
             if (s_rej[3] < 250u) s_rej[3]++;
             s_gate_bits |= V5F_EKF_GB_MAGHOLD;
@@ -817,7 +864,7 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
             }
             s_mag_cnt_upd = icm;
         }
-        st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG_NOSW, &s_nis[4], &s_rej[3],
+        st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
                         0x0100u, V5F_EKF_MAG_K_MAX);
         if (st == 0u) {
             s_gate_bits |= V5F_EKF_GB_MAG;
@@ -1286,9 +1333,21 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
         uint32_t ic = g_shm ? g_shm->ist.hdr.cnt : 0u;
         uint64_t ts = h->mag.fresh.drdy_tick;
         if (ic != s_ist_last || ts != s_mag_ts_last) {
+            float ags = 0.0f;
             s_ist_last = ic;
             s_mag_ts_last = ts;
-            for (i = 0u; i < 3u; i++) s_w_snap[i] = s_w_int[i];
+            /* ---- VER=97：把快照回溯到真正的 DRDY 时刻 ----
+             * 原来 s_w_snap = s_w_int(本帧)，等价于把"我方发现新样本的那一帧"当成采样
+             * 时刻，DRDY->读出这段延迟被当成 0（原注释已声明）。实测该延迟中位 0.56 ms
+             * / p90 0.61 ms（VER=96 的 159-160 两列，10 ns 计数），2000 dps 下就是 1.1
+             * 度固定滞后不被补偿。这里把快照按 (tk-ts) 往回推 w*age，s_mag_dth 的弧长
+             * 从而覆盖完整的 DRDY->当前帧。 */
+            if (ts != 0ULL && tk > ts) {
+                uint64_t a10 = tk - ts;
+                if (a10 > V5F_MAG_RDAGE_MAX_TICK) a10 = V5F_MAG_RDAGE_MAX_TICK;
+                ags = (float)a10 * 1e-8f;
+            }
+            for (i = 0u; i < 3u; i++) s_w_snap[i] = s_w_int[i] - w[i] * ags;
         }
         s_mag_age_ms = (ts != 0ULL && tk > ts) ? (float)(tk - ts) * 1e-5f : 0.0f;
     }
@@ -1298,6 +1357,28 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
     if (gate->ekf_tilt) s_tilt_bad_s = 0.0f;
     else if (s_tilt_bad_s < 10.0f) s_tilt_bad_s += dt;
     s_tilt_inv_ms = s_tilt_bad_s * 1e3f;
+    /* ★VER=95 解耦：磁的暂停不再直接跟 gate->ekf_tilt（它被加计污染）。
+     *   只在"原本的倾角观测**本可用**（acc_valid 且未削顶 且 |a|^2 在容差内）而倾角门仍拒"
+     *   时累计 —— 那才是姿态倾角真的有问题；加计不可用（运动/冲击/削顶）时不累计，
+     *   磁的可用性交回场判据（模长/沿重力分量/磁倾/水平分量）+ 连续 1 s 有效才开门。
+     *   含义变化：磁在运动中可继续修正，而不再等到停下后才一次性灌入（实测停后 0.5 s
+     *   曾灌入 59 度而运动期只有 17 度）。 */
+    {
+        float amg2 = h->imu.accel_g[0]*h->imu.accel_g[0]
+                   + h->imu.accel_g[1]*h->imu.accel_g[1]
+                   + h->imu.accel_g[2]*h->imu.accel_g[2];
+        uint8_t asat = 0u, kk;
+        for (kk = 0u; kk < 3u; kk++) {
+            int32_t av = (int32_t)h->imu.accel_lsb[kk];
+            if (av >= 32000 || av <= -32000) asat = 1u;
+        }
+        if (gate->ekf_tilt
+            || !(h->imu.acc_valid && !asat && (fabsf(amg2 - 1.0f) < V5F_EKF_TILT_AMAG_TOL))) {
+            s_mag_tilt_bad_s = 0.0f;
+        } else if (s_mag_tilt_bad_s < 10.0f) {
+            s_mag_tilt_bad_s += dt;
+        }
+    }
     for (i = 0u; i < 3u; i++) {
         s_dth[i] += (w[i] - s_x[IX_BG + i]) * dt;
         s_dvb[i] += f[i] * dt;
@@ -1553,9 +1634,19 @@ uint8_t v5f_proc_ekf_gate(volatile v5f_hold_t *h, volatile v5f_proc_gate_t *gate
          *   这里用的是 stat.level_dps（128 帧 ≈ 16 ms）。短窗其实更对 —— 要排除转动
          *   是因为离心项 a_c = w^2*r 会淹没重力方向，而 a_c 只在高 w 时才显著，
          *   16 ms 窗抓的正是它；慢转时 a_c 可忽略，不该因此关掉倾斜观测。
-         *   独立字段：与 gate->att_tilt 同源判据但各自成位，改一个不动另一个。 */
+         *   独立字段：与 gate->att_tilt 同源判据但各自成位，改一个不动另一个。
+         * ★VER=89：门限由 2 dps 改为 V5F_EKF_TILT_WMAX_DPS(61.2 dps，物理预算)，
+         *   同时把 a_c 项按 |w| 写进 M6 的 R（见 ekf_m6_tilt）——门只负责粗判，
+         *   带宽从**诚实的 R** 出，不再用收紧门限来回避离心项。 */
         gate->ekf_tilt = (uint8_t)(!sat && h->imu.acc_valid
                         && (fabsf(am2 - 1.0f) < V5F_EKF_TILT_AMAG_TOL)
+                        /* ★VER=91 回退到原设计的 2 dps（VER=89 曾放宽到 WMAX=61.2 dps）。
+                         *   原因：手持运动时加计的误差主项是**线加速度的切向分量**，它**不改变**
+                         *   |a| -> 上面那条 |am2-1|<0.06 门对它完全不可见（|a|=1.03 g 时切向可达
+                         *   0.25 g ≈ 14 度倾角误差）。放宽门等于让这类被污染的观测进倾角更新，
+                         *   实测运动姿态与"运动后漂"因此变差。R 里那个 a_c 项只覆盖离心项，不够。
+                         *   代价（已知并接受）：磁更新会像原来一样在运动中常被 s_tilt_bad_s 暂停
+                         *   —— 那与"倾角门"是**两个**问题，应另行决定是否解耦，不在这里混。 */
                         && ((h->stat.level_dps < V5F_EKF_TILT_LEV_DPS) || h->stat.ac_bypass));
     }
     /* ★ 门用 mag.ok（只查 |y| 模长一致性 = 外部磁干扰），**不用** mag.trust。
@@ -1565,41 +1656,21 @@ uint8_t v5f_proc_ekf_gate(volatile v5f_hold_t *h, volatile v5f_proc_gate_t *gate
      *   而且恰好在陀螺被整流误差污染时把偏航基准关掉（实测剧烈段只开 0.3%）。
      *   运动带来的两条真实误差走 R：倾角耦合 + 样本陈旧（在 ekf_m7_mag 里处理）。 */
     {
-        /* 磁力计模长：与**稳健基线**比，而不是与常数 1.0 比。
-         * 实测本场次 mag_norm p50=0.9321（场次硬铁漂移 6.8%），|mag_norm-1| 的
-         * p50=0.0977 正好压在 V5F_MAG_ERR_LIM=0.10 上 -> 门开 53.7% 来回抖。
-         * 与 ZUPT 那个 a_lin 是同一个病：阈值压在统计量中位数上。
-         * 基线只在"看起来干净"（偏离 < 门限）时才跟，所以外部磁干扰（局部突变）
-         * 不会被基线吃掉，而场次偏差（常数）会被跟上。 */
+        /* ★VER=90 基线**恒定固化在固件里**（= 1.0），彻底不做自愈。
+         *   标定把 A/C 归一化成 |f| = 1（见 V5F_MAG_A_INIT），所以安装正确时 |f| 恒为 1；
+         *   场次硬铁变化意味着**标定不再匹配安装**，正确做法是重标，而不是让门跟着漂。
+         *   旧版自愈（偏离<门限时慢跟随 + 持续偏离超过 V5F_EKF_MAG_NORM_REBASE
+         *   ≈2.9 s 就把基线重定到当前值）本意是跟场次常数偏差，但外部铁磁干扰只要
+         *   持续 3 s 就会被吸成新基线 -> dev 归零 -> 门重开。
+         *   实测 VER=89 夹具 90/180 采集：t=19.0~21.5 |f|=1.52~1.80、磁场方向偏 +17.5 度，
+         *   t=24~28.5 |f|=1.11、方向偏 -20 度，两段 mag_used 仍开 46~54%
+         *   （|f| 本来就在 col45 mag.mag_norm 上报着），EKF 偏航被拽 17~20 度且**不恢复**
+         *   —— 这就是"运动后漂"。改成只与常数 1.0 比以后，上述各段全部关门，
+         *   偏航交回陀螺；若整场都开不了门（mag_used=0% 且 col45 明显偏离 1），
+         *   说明该安装需要**重新标定**，而不是让固件自己漂。 */
         float dev, mnow = h->mag.mag_norm;
-        /* 初值只在**物理合理**时锁：开机时 mag_norm 是 0（IST 还没出样本），
-         * 把 0 锁成基线 -> dev 恒 ~0.94 -> 跟踪分支永不执行 -> 门永远打不开。
-         * 实测 VER=22 整份数据 mag 门 0.00%，就是这个自举死锁。 */
-        if (!s_mn_seen) {
-            if (mnow > V5F_EKF_MAG_NORM_LO && mnow < V5F_EKF_MAG_NORM_HI) {
-                s_mn_lp = mnow;
-                s_mn_seen = 1u;
-            }
-            dev = 0.0f;                       /* 还没基线：先放行 */
-        } else {
-            dev = fabsf(mnow - s_mn_lp);
-            if (dev < V5F_EKF_MAG_NORM_DEV) {
-                s_mn_lp += (mnow - s_mn_lp) * V5F_EKF_MAG_NORM_ALPHA;
-            }
-            /* 自愈：连续打不开太久（约 3 s）就认为基线本身错了，重新自举 */
-            if (dev >= V5F_EKF_MAG_NORM_DEV) {
-                if (s_mn_bad < 0xFFFFu) s_mn_bad++;
-                if (mnow > V5F_EKF_MAG_NORM_LO && mnow < V5F_EKF_MAG_NORM_HI
-                    && s_mn_bad > V5F_EKF_MAG_NORM_REBASE) {
-                    s_mn_lp = mnow;
-                    s_mn_bad = 0u;
-                    dev = 0.0f;
-                }
-            } else {
-                s_mn_bad = 0u;
-            }
-        }
-        s_mn_ok = (uint8_t)(dev < V5F_EKF_MAG_NORM_DEV);
+        dev = fabsf(mnow - 1.0f);
+        s_mn_ok = (uint8_t)(dev < V5F_MAG_ERR_LIM);
         gate->ekf_mag_yaw = (uint8_t)(s_mn_ok && (V5F_EKF_YAW_OBS_EN != 0u));
         s_mag_gate = gate->ekf_mag_yaw;      /* 上报：门到底开没开 */
     }

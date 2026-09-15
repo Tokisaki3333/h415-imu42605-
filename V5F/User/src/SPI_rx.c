@@ -15,6 +15,17 @@ static volatile uint8_t rxfifo[512];
 /* 本 ISR 的耗时（us）。注意 justfloat_report() 在 ISR 里跑的位置早于计时结束那行，
  * 所以上报的是**上一帧**的耗时（一帧滞后，对性能监控无影响）。 */
 static volatile uint32_t s_dma1_irq_us = 0;
+
+/* ==================== VER=97 陀螺削顶统计 ====================
+ * 判定与统计都在 justfloat_report 里每帧做（此时 imu.gyro_lsb[] 已是本帧原始值），
+ * 与日志 flags bit12~15 同源，不会不同步。 */
+static uint16_t s_clip_win_cnt;      /* 本窗削顶帧数 */
+static uint16_t s_clip_win_n;        /* 本窗总帧数 */
+static uint8_t  s_clip_win_ax;       /* 本窗削顶过的轴 bit0..2 */
+static uint16_t s_clip_pm;           /* 上一窗削顶千分比 */
+static uint8_t  s_clip_ax;           /* 上一窗轴位 */
+static uint32_t s_clip_total;        /* 上电以来削顶帧数 */
+
 /* 上报用：当帧 DRDY 间隔（通道 27）。上报在 ISR 内、与处理链同帧，故这里的时间戳
  * 就是本帧 fresh.drdy_tick；差值乘 1e-2 得 us（1 tick = 10 ns）。 */
 static uint64_t s_rep_last_tick = 0;
@@ -366,7 +377,7 @@ static void hold_poll(void)
  *         会话 6.1~6.7%，整段被外部磁源覆盖时可达 1.4~2.9。
  *         它也把"是磁力计坏了还是环境坏了"分开：|y| 偏但方向对 = 环境；
  *         方向也乱 = 磁力计或标定。 */
-#define JF_CH_NUM     154u   /* **运行时**实际写入的列数。不是估的：tools/calib/count_cols.py
+#define JF_CH_NUM     162u   /* **运行时**实际写入的列数。不是估的：tools/calib/count_cols.py
                               * 逐行数 ch[c++] 得到静态 114，减掉 DRDY 间隔那条 if/else
                               * 链的 2 个未执行分支 = 112。ch[] 是栈上数组，多写一格就是
                               * 栈踩踏而编译器一个字都不会说 —— 改列必须用那个脚本复核。*/
@@ -393,8 +404,27 @@ static void justfloat_report(void)
     static float   ch[JF_CH_NUM];
     static uint8_t buf[JF_FRAME_LEN];
     uint32_t i;   /* 列数已达 111：计数器类型必须 >= 上界，见 uint8_t 死循环那次事故 */
+    uint8_t clip_any = 0u, clip_ax = 0u;   /* VER=97 本帧削顶：任意轴 / 轴位 */
     uint8_t c = 0u;     /* 通道自增计数器：顺序即列号，增删通道不必手改索引（列号见上方说明） */
 
+#if (V5F_CDC_QUAT_ONLY != 0u)
+    /* ---- VER=100: CDC(EP2 bulk IN) 上报改为 EKF 四元数, JustFloat 标准格式 ----
+     * 载荷 = 4 x float32(小端) + 帧尾 00 00 80 7F  => 20 字节/帧, 每个 IMU 帧一帧(8 kHz)。
+     * 只报 EKF 姿态; 不报 att.q、不报其它通道。帧内无版本指纹(JustFloat 无标签位)。
+     * 切回旧 162 通道日志: v5f_tune.h 里 V5F_CDC_QUAT_ONLY 改 0u。 */
+    {
+        static uint8_t qbuf[20];        /* static: 本函数在 DMA1 中断最深层, 栈只有 2 KB */
+        float qv[4];
+        qv[0] = g_v5f_hold.ekf.q[0];
+        qv[1] = g_v5f_hold.ekf.q[1];
+        qv[2] = g_v5f_hold.ekf.q[2];
+        qv[3] = g_v5f_hold.ekf.q[3];
+        memcpy(qbuf, qv, 16u);
+        qbuf[16] = 0x00u; qbuf[17] = 0x00u; qbuf[18] = 0x80u; qbuf[19] = 0x7Fu;
+        (void)hid_up_enqueue(qbuf, 20u);
+    }
+    return;
+#endif
     for (i = 0u; i < 4u; i++) ch[c++]     = g_v5f_hold.att.q[i];
     for (i = 0u; i < 3u; i++) ch[c++] = g_v5f_hold.vel.v_nav[i];
 
@@ -403,6 +433,29 @@ static void justfloat_report(void)
     ch[c++] = (float)g_v5f_proc_gate.acc_traction;  /* 加速度零偏追踪门 */
     for (i = 0u; i < 3u; i++) ch[c++] = g_v5f_hold.imu.a_lin[i];        /* 牵引驱动量 */
     for (i = 0u; i < 3u; i++) ch[c++] = g_v5f_hold.imu.accel_bias_g[i]; /* 牵引零偏估计 */
+    /* ---- VER=97 陀螺削顶判定（每帧，直接看原始 LSB；满量程 ±2000 dps = ±32768）---- */
+    clip_any = 0u; clip_ax = 0u;
+    {
+        int32_t cx = (int32_t)g_v5f_hold.imu.gyro_lsb[0];
+        int32_t cy = (int32_t)g_v5f_hold.imu.gyro_lsb[1];
+        int32_t cz = (int32_t)g_v5f_hold.imu.gyro_lsb[2];
+        if (cx >= V5F_CLIP_LSB_ABS || cx <= -V5F_CLIP_LSB_ABS) clip_ax |= 1u;
+        if (cy >= V5F_CLIP_LSB_ABS || cy <= -V5F_CLIP_LSB_ABS) clip_ax |= 2u;
+        if (cz >= V5F_CLIP_LSB_ABS || cz <= -V5F_CLIP_LSB_ABS) clip_ax |= 4u;
+        clip_any = (clip_ax != 0u) ? 1u : 0u;
+        if (clip_any != 0u) {
+            if (s_clip_total < 0xFFFFFFFFu) s_clip_total++;
+            if (s_clip_win_cnt < 0xFFFFu) s_clip_win_cnt++;
+            s_clip_win_ax |= clip_ax;
+        }
+        if (s_clip_win_n < 0xFFFFu) s_clip_win_n++;
+        if (s_clip_win_n >= V5F_CLIP_WIN_N) {   /* 窗满：发布千分比 + 轴位，清零重来 */
+            s_clip_pm = (uint16_t)((1000u * (uint32_t)s_clip_win_cnt) / (uint32_t)s_clip_win_n);
+            s_clip_ax = s_clip_win_ax;
+            s_clip_win_cnt = 0u; s_clip_win_n = 0u; s_clip_win_ax = 0u;
+        }
+    }
+
 
     /* 打包标志位（bit 序号即权重；float 精确表示 < 2^24） */
     {
@@ -419,6 +472,11 @@ static void justfloat_report(void)
         if ((g_v5f_hold.imu.acc_traction_flags & V5F_ACC_TRACTION_FLAG_ROLLBACK) != 0u) f |= 1u << 9;
         if (g_v5f_hold.stat.ac_bypass != 0u) f |= 1u << 10;   /* 判静启动阶段旁路门 */
         if (s_bad_f32 != 0u) f |= 1u << 11;   /* 出现过非有限载荷值 */
+        if (clip_any != 0u)       f |= 1u << 12;   /* VER=97 本帧有轴削顶 */
+        if ((clip_ax & 1u) != 0u) f |= 1u << 13;   /* VER=97 X 轴削顶 */
+        if ((clip_ax & 2u) != 0u) f |= 1u << 14;   /* VER=97 Y 轴削顶 */
+        if ((clip_ax & 4u) != 0u) f |= 1u << 15;   /* VER=97 Z 轴削顶 */
+
         ch[c++] = (float)f;
     }
 
@@ -689,7 +747,35 @@ static void justfloat_report(void)
         ch[c++] = g_v5f_hold.ekf.tilt_inv_ms;      /* ★VER=84 倾角参考失效时长(ms) */
         ch[c++] = (float)g_v5f_hold.ekf.mag_hold;  /* ★VER=84 磁被暂停 */
         ch[c++] = (float)g_v5f_hold.ekf.grav_ok;   /* ★VER=84 重力观测门 */
-        ch[c++] = g_v5f_hold.ekf.grav_nis;         /* ★VER=84 重力观测 NIS */   /* ★VER=83 磁数据年龄(ms) */
+        ch[c++] = g_v5f_hold.ekf.grav_nis;
+
+        /* ★VER=95 上报补齐（PC 复演用；追加在末尾 -> 既有列号全部不变，NCH 154 -> 159）
+         *   为什么必须补：仿真此前**自己重算门**，而它没有编译上游 proc，门输入与固件不同，
+         *   实测 gate==1 恒为 0.998、mag_used 恒 50%，"门关 vs 门开"根本没法对照。
+         *   记录下面这几个量后，仿真可直接沿用固件的门，复演才有意义。 */
+        ch[c++] = (float)g_v5f_hold.mag.ok;             /* 154 样本有效性 |mag_norm-1| < V5F_MAG_ERR_LIM */
+        ch[c++] = (float)g_v5f_proc_gate.ekf_mag_yaw;   /* 155 磁牵引外门（输出） */
+        ch[c++] = (float)g_v5f_proc_gate.ekf_tilt;      /* 156 倾角门（输出；VER=95 起不再直接管磁） */
+        ch[c++] = (float)g_v5f_hold.ekf.mag_gate;       /* 157 EKF 记录的磁门 */
+        ch[c++] = (float)g_v5f_hold.ekf.mag_used;       /* 158 本周期 M7 是否真的执行了更新 */
+
+        /* ★VER=96 追加：DRDY 时间戳 + 逐帧 XOR 校验和（PC 复演必需）
+         *   159/160 单位 1us(GetTime64_10Ns()/100), 取低 24 位(16.7s 回绕), 上位机按时戳还原无歧义 -> 可自算
+         *   磁样本年龄 = (159-160), 不再依赖被 ~196Hz 锁存的 mag_age_ms。
+         *   161 对"前 NCH-1 列载荷的全部字节"异或(种子 0x5A5A)：坏帧(载荷整体位移,
+         *   实测约 1~3%)靠它逐帧判废, 不必再用 |q|≈1 / 幅值 之类的启发式。 */
+        {
+            uint64_t tk10 = GetTime64_10Ns() / 100ULL;  /* tk 在此作用域不可见; 与 DRDY 同一时钟 */
+            uint64_t md10 = g_v5f_hold.mag.fresh.drdy_tick / 100ULL;
+            uint16_t xk = 0x5A5Au;
+            const uint8_t *pb = (const uint8_t *)ch;
+            uint32_t bc;
+            ch[c++] = (float)(uint32_t)(tk10 & 0xFFFFFFULL);
+            ch[c++] = (float)(uint32_t)(md10 & 0xFFFFFFULL);
+            ch[c++] = 0.0f;                                  /* 占位, 下面回填 */
+            for (bc = 0u; bc < (uint32_t)(JF_CH_NUM - 1u) * 4u; bc++) xk ^= pb[bc];
+            ch[JF_CH_NUM - 1u] = (float)xk;
+        }         /* ★VER=84 重力观测 NIS */   /* ★VER=83 磁数据年龄(ms) */
 
 
     /* ---- 载荷必须是有限 float（数据有效性；与切帧无关，见下）----
@@ -808,3 +894,9 @@ void SPI_DMA_Init(void)
     NVIC_SetPriority(DMA1_Channel2_IRQn, 0<<5);
     NVIC_EnableIRQ(DMA1_Channel2_IRQn);
 }
+
+
+/* ==================== VER=97 陀螺削顶统计接口（OLED / 上位机） ==================== */
+uint16_t v5f_imu_clip_pm(void)    { return s_clip_pm; }
+uint8_t  v5f_imu_clip_axis(void)  { return s_clip_ax; }
+uint32_t v5f_imu_clip_total(void) { return s_clip_total; }

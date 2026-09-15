@@ -279,6 +279,10 @@ typedef struct {
 extern volatile v5f_hold_t g_v5f_hold;
 
 /* ---------------- 函数原型 ---------------- */
+/* ---- VER=97 陀螺削顶统计（日志 flags bit12~15 的镜像，供 OLED / 上位机）---- */
+uint16_t v5f_imu_clip_pm(void);      /* 最近一个统计窗的削顶千分比 0~1000 */
+uint8_t  v5f_imu_clip_axis(void);    /* 该窗内削顶过的轴 bit0=X bit1=Y bit2=Z */
+uint32_t v5f_imu_clip_total(void);   /* 上电以来削顶帧总数 */
 void SPI_DMA_Init(void);
 
 #endif /* __SPI_RX_H */
