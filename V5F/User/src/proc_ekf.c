@@ -126,7 +126,7 @@ static float    s_bp_ring[V5F_EKF_BARO_HP_N];
 static uint8_t  s_bh_idx;
 static uint8_t  s_bh_fill;
 static float    s_mag_dth[3];
-static float    s_mag_tilt_bad_s;   /* ★VER=95 磁专用倾角失效累计(与加计倾角门解耦) */         /* 自磁力计采样以来的**机体**转动量 rad（补样本陈旧） */
+/* VER=103 删除 s_mag_tilt_bad_s：它只服务于“运动中禁磁”那条 hold，已随它一起删 */
 static uint32_t s_ist_last;
 static float    s_w_int[3];           /* ★VER=83 永不归零的陀螺角增量积分 int(w dt) (rad) */
 static float    s_w_snap[3];          /* ★VER=83 磁 DRDY 时刻的积分快照 */
@@ -639,6 +639,7 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
 {
     float R[1], r[1], rg[2], Rt[3][3], Bn[3], mf[3], ab[3], mh[3], xv[3], crs3[3];
     float fp[3], mh2[3], crs4[3], b0v[3], up_nav[3];
+    float bb[3], e1[3], e2[3], r2v[2], RRv[4];   /* VER=103 真牵引用 */
     float fhb2, ci, b0x, b0y, b0z, sig2;
     float dpar, mhn, xvn, thm, thp, psih, dp2, mh2n, an2, cc;
     uint8_t st;
@@ -837,43 +838,102 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         return;
     }
 
-    R[0] = sig2;
-    /* ★VER=65/75 位移死区（VER=75 的常量是 0.0f，此行当前不生效） */
-    if (s_mag_r < V5F_EKF_MAG_DEAD_DEG) {
-        return;
+    /* ---- VER=103 真牵引：机体系残差（不做任何姿态投影）-------------------- */
+#if (V5F_EKF_MAG_MODE != 0u)
+    {
+        float n1, c1, sg2, pr0, pr1, pr2, Sx[3][3];
+        uint32_t ax2;
+        bb[0] = Rt[0][0]*b0x + Rt[1][0]*b0y + Rt[2][0]*b0z;
+        bb[1] = Rt[0][1]*b0x + Rt[1][1]*b0y + Rt[2][1]*b0z;
+        bb[2] = Rt[0][2]*b0x + Rt[1][2]*b0y + Rt[2][2]*b0z;
+        n1 = sqrtf(bb[0]*bb[0] + bb[1]*bb[1] + bb[2]*bb[2]);
+        if (n1 < 1e-6f) return;
+        bb[0] /= n1; bb[1] /= n1; bb[2] /= n1;
+        c1 = mf[0]*bb[0] + mf[1]*bb[1] + mf[2]*bb[2];
+        /* r = P_⊥ m^ = m^ - (m^·b^)b^  （等于 (I - b^b^T)(m^ - b^)）
+         * 注意不能写成 (m^ - b^) - (m^·b^)b^：那多减了一个 b^，
+         * 虽然再投影到 ⊥b^ 后数值被消掉，但 H 就不再是它的 Jacobian（不自洽）。 */
+        pr0 = mf[0] - c1*bb[0]; pr1 = mf[1] - c1*bb[1]; pr2 = mf[2] - c1*bb[2];
+        /* ⊥b^ 平面正交基：e1 = normalize(z^ x b^)，e2 = b^ x e1 */
+        e1[0] = -bb[1]; e1[1] = bb[0]; e1[2] = 0.0f;
+        n1 = sqrtf(e1[0]*e1[0] + e1[1]*e1[1]);
+        if (n1 < 1e-4f) { e1[0] = 1.0f; e1[1] = 0.0f; e1[2] = 0.0f; }
+        else { e1[0] /= n1; e1[1] /= n1; e1[2] /= n1; }
+        e2[0] = bb[1]*e1[2] - bb[2]*e1[1];
+        e2[1] = bb[2]*e1[0] - bb[0]*e1[2];
+        e2[2] = bb[0]*e1[1] - bb[1]*e1[0];
+        r2v[0] = e1[0]*pr0 + e1[1]*pr1 + e1[2]*pr2;
+        r2v[1] = e2[0]*pr0 + e2[1]*pr1 + e2[2]*pr2;
+        s_mag_r = sqrtf(r2v[0]*r2v[0] + r2v[1]*r2v[1]) * RAD2DEG;
+        s_mag_rx = pr0; s_mag_ry = pr1;
+        /* H 行 = -e_i^T [b^]x（作用在旋转矢量 dx[6..8] 上） */
+        H_zero(2u);
+        Sx[0][0] = 0.0f;   Sx[0][1] = -bb[2]; Sx[0][2] =  bb[1];
+        Sx[1][0] = bb[2];  Sx[1][1] = 0.0f;   Sx[1][2] = -bb[0];
+        Sx[2][0] = -bb[1]; Sx[2][1] = bb[0];  Sx[2][2] = 0.0f;
+        /* 世界系扰动约定（ekf_inject: q <- dq (x) q）：H = -e_i^T [b^]x R^T
+         * 于是 H·b^_n ≡ 0 —— 状态空间里"绕**世界系磁场轴**旋转"无观测（结构性质）。
+         * （体坐标系约定会写成 -e_i^T[b^]x，零空间是 b^_b；两者差一个 R^T，弄错=方向全错） */
+        for (ax2 = 0u; ax2 < 3u; ax2++) {
+            float w0, w1, w2;
+            w0 = Sx[0][0]*Rt[ax2][0] + Sx[0][1]*Rt[ax2][1] + Sx[0][2]*Rt[ax2][2];
+            w1 = Sx[1][0]*Rt[ax2][0] + Sx[1][1]*Rt[ax2][1] + Sx[1][2]*Rt[ax2][2];
+            w2 = Sx[2][0]*Rt[ax2][0] + Sx[2][1]*Rt[ax2][1] + Sx[2][2]*Rt[ax2][2];
+            s_H[0][IX_Q + ax2] = -c1*(e1[0]*w0 + e1[1]*w1 + e1[2]*w2);
+            s_H[1][IX_Q + ax2] = -c1*(e2[0]*w0 + e2[1]*w1 + e2[2]*w2);
+        }
+        sg2 = V5F_EKF_MAG_VEC_SIG_DEG * DEG2RAD;
+        sg2 = sg2 * sg2;
+        RRv[0] = sg2; RRv[1] = 0.0f; RRv[2] = 0.0f; RRv[3] = sg2;
+        s_mag_rs = 1.0f;                 /* 真牵引不再用 R 放大去压投影耦合 */
     }
+#endif
+
+    /* ---- VER=103 共用门：残差上限 + 同一磁样本不重复更新 -------------------
+     * **不再有"运动中禁磁"**：合法性由外门给（gate->ekf_mag_yaw = |mag_norm-1| < MAG_ERR_LIM，只看模）；
+     * 这里只剩残差太大(>R_MAX)拒一次、以及同一个磁样本不重复更新（磁 ~190Hz vs 帧 335Hz）。 */
     if (s_mag_r > V5F_EKF_MAG_R_MAX_DEG) {
         if (s_rej[3] < 250u) s_rej[3]++;
         s_gate_bits |= V5F_EKF_GB_CHI2;
-    } else {
-        /* ★VER=84 倾角参考失效超时 -> 暂停磁更新（并记门位）。
-         * 不做这个，磁更新的倾斜行 dx[6:8]=P[6:8,8]*r/S 会在倾角无观测时无界累积；
-         * 仿真：30 度磁激励下倾角 52度 -> 1.1度、偏航 20度 -> 0.75度。 */
-        if (s_mag_tilt_bad_s > V5F_EKF_MAG_GT_HOLD_S) {   /* ★VER=95 解耦后的判据 */
-            s_mag_hold = 1u;
-            if (s_rej[3] < 250u) s_rej[3]++;
-            s_gate_bits |= V5F_EKF_GB_MAGHOLD;
+        return;
+    }
+    {
+        uint32_t icm = g_shm ? g_shm->ist.hdr.cnt : 0u;
+        if (icm == s_mag_cnt_upd) {
+            s_mag_dqx = 0.0f; s_mag_dqy = 0.0f; s_mag_dqz = 0.0f;
             return;
         }
-        /* ★VER=73 只在磁样本真的更新时施加一次 */
-        {
-            uint32_t icm = g_shm ? g_shm->ist.hdr.cnt : 0u;
-            if (icm == s_mag_cnt_upd) {
-                s_mag_dqx = 0.0f; s_mag_dqy = 0.0f; s_mag_dqz = 0.0f;
-                return;
-            }
-            s_mag_cnt_upd = icm;
-        }
-        st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
-                        0x0100u, V5F_EKF_MAG_K_MAX);
-        if (st == 0u) {
-            s_gate_bits |= V5F_EKF_GB_MAG;
-            s_mag_used = 1u;
-            s_mag_dqx = s_dx[IX_Q + 0] * RAD2DEG;
-            s_mag_dqy = s_dx[IX_Q + 1] * RAD2DEG;
-            s_mag_dqz = s_dx[IX_Q + 2] * RAD2DEG;
-        }
+        s_mag_cnt_upd = icm;
     }
+
+#if (V5F_EKF_MAG_MODE == 0u)
+    /* ---------------- 模式 0：旧标量牵引（保留回退） ---------------- */
+    R[0] = sig2;
+    if (s_mag_r < V5F_EKF_MAG_DEAD_DEG) return;
+    st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
+                    0x0100u, V5F_EKF_MAG_K_MAX);
+    if (st == 0u) {
+        s_gate_bits |= V5F_EKF_GB_MAG;
+        s_mag_used = 1u;
+        s_mag_dqx = s_dx[IX_Q + 0] * RAD2DEG;
+        s_mag_dqy = s_dx[IX_Q + 1] * RAD2DEG;
+        s_mag_dqz = s_dx[IX_Q + 2] * RAD2DEG;
+    }
+#else
+    /* ---------------- 模式 1：真牵引（2 维向量量测） ---------------- */
+    st = ekf_update(RRv, 2u, r2v, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
+                    0x01C0u, V5F_EKF_MAG_VEC_K_MAX);
+    if (st == 0u) {
+        s_gate_bits |= V5F_EKF_GB_MAG;
+        s_mag_used = 1u;
+        s_mag_dqx = s_dx[IX_Q + 0] * RAD2DEG;
+        s_mag_dqy = s_dx[IX_Q + 1] * RAD2DEG;
+        s_mag_dqz = s_dx[IX_Q + 2] * RAD2DEG;
+    } else {
+        s_mag_dqx = 0.0f; s_mag_dqy = 0.0f; s_mag_dqz = 0.0f;
+    }
+#endif
+
 }
 
 /* M1 水平位置（2 维，按 V5F_EKF_POS_PERIOD_S 降频）+ M2 高度（1 维） */
@@ -1363,22 +1423,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
      *   磁的可用性交回场判据（模长/沿重力分量/磁倾/水平分量）+ 连续 1 s 有效才开门。
      *   含义变化：磁在运动中可继续修正，而不再等到停下后才一次性灌入（实测停后 0.5 s
      *   曾灌入 59 度而运动期只有 17 度）。 */
-    {
-        float amg2 = h->imu.accel_g[0]*h->imu.accel_g[0]
-                   + h->imu.accel_g[1]*h->imu.accel_g[1]
-                   + h->imu.accel_g[2]*h->imu.accel_g[2];
-        uint8_t asat = 0u, kk;
-        for (kk = 0u; kk < 3u; kk++) {
-            int32_t av = (int32_t)h->imu.accel_lsb[kk];
-            if (av >= 32000 || av <= -32000) asat = 1u;
-        }
-        if (gate->ekf_tilt
-            || !(h->imu.acc_valid && !asat && (fabsf(amg2 - 1.0f) < V5F_EKF_TILT_AMAG_TOL))) {
-            s_mag_tilt_bad_s = 0.0f;
-        } else if (s_mag_tilt_bad_s < 10.0f) {
-            s_mag_tilt_bad_s += dt;
-        }
-    }
+    /* VER=103: 原 s_mag_tilt_bad_s 累计块已删除（它只服务于"运动中禁磁"那条 hold）。 */
     for (i = 0u; i < 3u; i++) {
         s_dth[i] += (w[i] - s_x[IX_BG + i]) * dt;
         s_dvb[i] += f[i] * dt;

@@ -95,7 +95,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        102u
+#define V5F_FW_VER        103u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -752,7 +752,24 @@
  *   1) R 里必须含 (tan(dip)*sigma_tilt)^2；
  *   2) 重力观测连续失效超 MAG_GT_HOLD_S -> 暂停磁更新（否则
  *      磁更新的倾斜行 dx[6:8]=P[6:8,8]*r/S 会在倾角无观测时无界累积）。 */
-#define V5F_EKF_MAG_GT_HOLD_S     0.30f
+#define V5F_EKF_MAG_GT_HOLD_S     0.30f   /* VER=103 已弃用：那条运动中禁磁的 hold 删了 */
+/* ---- VER=103 地磁观测：真牵引（向量量测）+ 取消运动中禁磁 ------------------
+ * V5F_EKF_MAG_MODE:
+ *   0u = 旧标量牵引（把实测/预测场都投影到 ⊥a_up 平面后比航向角，H 只有 dx[8]=1）
+ *   1u = 真牵引：正牌 2 维量测更新
+ *        b^_b = R(q)^T b^_n                      预测的机体系磁场方向
+ *        r    = (I - b^ b^T)(m^_b - b^_b)        残差落在 ⊥b^ 平面内，不做姿态投影
+ *        H    = -e_i^T [b^]x,  e1,e2 ⊥ b^
+ *        => H·b^ ≡ 0 是**结构**性质：绕磁力线无观测，不再靠 R 放大人为压
+ * 合法性只看模：|mag_norm - 1| < V5F_MAG_ERR_LIM（外门 gate->ekf_mag_yaw 已是这个条件）。
+ * VER=103 起删除"运动中禁磁"（原 V5F_EKF_MAG_GT_HOLD_S 那条 hold）：那条是为
+ * "姿态误差 -> 重力法平面投影误差 -> 地磁误差"设的，是**投影式**观测的产物；
+ * 真牵引在机体系做差没有这个耦合，所以只要模合法就实时牵引。
+ * σ 依据本机实测：标定后地磁方向误差 p50 0.5 / p90 1.3 deg（见 docs/mag360_recording_protocol.md 6） */
+#define V5F_EKF_MAG_MODE          1u
+#define V5F_EKF_MAG_VEC_SIG_DEG   0.9f
+#define V5F_EKF_MAG_VEC_K_MAX     0.10f
+
 #define V5F_EKF_MAG_RSCALE_MAX    100.0f   /* 磁偏航硬新息门：|r| 超它整帧丢弃 */
 /* ★VER=82 K_MAX 0.05 -> 0.015：按实测的**非磁漂移速度**把环路放慢，降偏航抖动。
  * 一阶环总误差 = d*tau + s*sqrt(1/(2*tau*f))：
