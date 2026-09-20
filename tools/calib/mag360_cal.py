@@ -29,9 +29,15 @@ import cols_162 as C   # noqa: E402
 TUNE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
                     'V5F', 'User', 'inc', 'v5f_tune.h')
 
-RANK_TOL = 1e-4        # σ_i/σ0 低于它视为零空间方向
+RANK_TOL = 1e-3        # σ_i/σ0 低于它视为零空间方向。实测标度自由度 ≈1e-4，
+                       # 真实"最弱可辨识方向" ≈1.5e-3，中间有 ~15 倍空隙，1e-3 落在空隙里。
 MIN_SAMPLES = 3000
 MIN_EIG_COVER = 0.02   # 仅信息性：Σm̂m̂ᵀ 最小特征值（不要求各向同性）
+
+
+def dip_deg(w0):
+    v = w0 / (np.linalg.norm(w0) + 1e-30)
+    return float(np.degrees(np.arcsin(np.clip(-v[2], -1, 1))))
 
 
 # ------------------------- 基础工具 -------------------------
