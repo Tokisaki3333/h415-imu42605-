@@ -862,9 +862,13 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         e2[0] = bb[1]*e1[2] - bb[2]*e1[1];
         e2[1] = bb[2]*e1[0] - bb[0]*e1[2];
         e2[2] = bb[0]*e1[1] - bb[1]*e1[0];
-        r2v[0] = e1[0]*pr0 + e1[1]*pr1 + e1[2]*pr2;
-        r2v[1] = e2[0]*pr0 + e2[1]*pr1 + e2[2]*pr2;
-        s_mag_r = sqrtf(r2v[0]*r2v[0] + r2v[1]*r2v[1]) * RAD2DEG;
+        /* 残差 = 量测在 ⊥b^ 基上的分量（e_i ⊥ b^_b => e_i·(m^ - c1 b^) 与 e_i·m^ 完全同值，
+         * 这里写后者：H = dh/dx 与它一一对应，避免 c1 的形式导数混进来）。 */
+        r2v[0] = e1[0]*mf[0] + e1[1]*mf[1] + e1[2]*mf[2];
+        r2v[1] = e2[0]*mf[0] + e2[1]*mf[1] + e2[2]*mf[2];
+        /* 上报**夹角** theta = angle(m^, b^_b) = atan2(|r|, m^·b^)，
+         * 不能直接报 |r|（那是 sin(theta)，90 度时会显示成 57.3 度）。 */
+        s_mag_r = atan2f(sqrtf(r2v[0]*r2v[0] + r2v[1]*r2v[1]), c1) * RAD2DEG;
         s_mag_rx = pr0; s_mag_ry = pr1;
         /* H 行 = -e_i^T [b^]x（作用在旋转矢量 dx[6..8] 上） */
         H_zero(2u);
@@ -879,8 +883,8 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
             w0 = Sx[0][0]*Rt[ax2][0] + Sx[0][1]*Rt[ax2][1] + Sx[0][2]*Rt[ax2][2];
             w1 = Sx[1][0]*Rt[ax2][0] + Sx[1][1]*Rt[ax2][1] + Sx[1][2]*Rt[ax2][2];
             w2 = Sx[2][0]*Rt[ax2][0] + Sx[2][1]*Rt[ax2][1] + Sx[2][2]*Rt[ax2][2];
-            s_H[0][IX_Q + ax2] = -c1*(e1[0]*w0 + e1[1]*w1 + e1[2]*w2);
-            s_H[1][IX_Q + ax2] = -c1*(e2[0]*w0 + e2[1]*w1 + e2[2]*w2);
+            s_H[0][IX_Q + ax2] = e1[0]*w0 + e1[1]*w1 + e1[2]*w2;
+            s_H[1][IX_Q + ax2] = e2[0]*w0 + e2[1]*w1 + e2[2]*w2;
         }
         sg2 = V5F_EKF_MAG_VEC_SIG_DEG * DEG2RAD;
         sg2 = sg2 * sg2;
