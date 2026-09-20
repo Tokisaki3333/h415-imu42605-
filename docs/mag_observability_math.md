@@ -228,3 +228,23 @@ A/B 只需把 `V5F_EKF_MAG_MODE` 在 1u/0u 之间切一次重编。
 `θ` 上报一致 1.4e-11、符号自检通过。**下一轮录像应看到**：`mag_r_deg` p50 落在
 0.5–1.5°、`nis[4]` 量级 1–10、`mag_rej` 回到 0、`mag_used` ≈ 磁/帧速率比（~50%）、
 `mag_rs`=1.00、`mag_hold`=0。
+
+### 7.2 VER=105：旧标量模式**已彻底删除**（不留条件编译）
+
+问过一句"为何要保留旧模式"——不保留。VER=105 起：
+
+- `proc_ekf.c` 里 4 个 `#if (V5F_EKF_MAG_MODE == 0u)` 块整块删除（R/r 声明、旧 R 模型、
+  旧标量新息、模式 0 更新分支），2 个 `!= 0u` 条件行去掉（内容保留）。
+  M7 里现在**没有任何条件编译**，也没有 `MODE` 开关。
+- 随之删除的孤儿常量：`V5F_EKF_MAG_MODE / MAG_K_MAX / MAG_R_DEG / MAG_TILT_CAP_DEG /
+  MAG_RSCALE_MAX / MAG_DEAD_DEG / MAG_GT_HOLD_S / MAG_YAW_R_DEG / EKF_MAG_SIG_RAD`，
+  以及静态量 `s_tilt_sig_deg`（只服务于旧 R 模型）。
+- **一处真实依赖**必须一起改：`V5F_EKF_YAW_P_MIN` 原本是 `(V5F_EKF_MAG_SIG_RAD)^2`
+  （0.5 度旧量测噪声），删掉那个宏就编不过；现改真牵引的 sigma
+  `((V5F_EKF_MAG_VEC_SIG_DEG*DEG2RAD)^2)`。
+- gcc 那几条 unused 警告（`R[1]`/`r[1]`/`sig2`/`pr2`/`s_tilt_sig_deg`）全部消失。
+- `s_mag_hold` 保留：它是对外列 151，值恒 0（禁磁已去，留列不动帧格式）。
+- 对外列一个没动：`mag_r_deg`(119) = 夹角 θ（度）、`mag_rx/ry`(128/129) = ⊥b̂ 两维新息（度）、
+  `mag_rs`(149) 恒 1.00、`mag_cmp_thm/thp`(144/145) 仍是实测/预测航向诊断。
+- 验证脚本合并为 `tools/ekf_session/check_magvec.py`（A1–A7 数学 + C 结构，含"旧模式零残留"）。
+- 想回看旧行为：git 历史里的 VER=102/103 提交即可，不需要在源码里留开关。
