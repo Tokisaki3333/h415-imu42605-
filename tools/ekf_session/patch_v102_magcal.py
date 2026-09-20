@@ -6,14 +6,17 @@
 校验: 零空间=1, 半分 ‖A1-A2‖/‖A‖=2.7%, 方向残差 静态 p50 3.53->0.95°, 全场 2.78->0.48°
 
 用法: python tools/ekf_session/patch_v102_magcal.py
-回退: 备份 .bak_v102_mag，或 git checkout -- V5F/User/inc/v5f_tune.h
+回退: bak_src/V5F/User/inc/v5f_tune.h.bak_v102_mag（或 git checkout -- V5F/User/inc/v5f_tune.h）
 """
 import hashlib
 import os
 import re
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bakpath as B          # 备份唯一合法去处：<repo>/bak_src/...
+
+ROOT = B.REPO
 TUNE = os.path.join(ROOT, 'V5F', 'User', 'inc', 'v5f_tune.h')
 BAK = '.bak_v102_mag'
 
@@ -36,9 +39,7 @@ def g(s):
 
 def main():
     src = open(TUNE, 'rb').read()
-    if os.path.exists(TUNE + BAK):
-        os.remove(TUNE + BAK)
-    open(TUNE + BAK, 'wb').write(src)
+    B.save(TUNE, BAK)                     # 备份写进 bak_src/，绝不落源码目录
     before = hashlib.md5(src).hexdigest()[:8]
 
     i0 = src.find(b'#define V5F_MAG_A_INIT')

@@ -17,12 +17,15 @@ import os
 import re
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bakpath as B          # 备份唯一合法去处：<repo>/bak_src/...
+
+ROOT = B.REPO
 TUNE = os.path.join(ROOT, 'V5F', 'User', 'inc', 'v5f_tune.h')
 SPI = os.path.join(ROOT, 'V5F', 'User', 'src', 'SPI_rx.c')
 MD5_TUNE_V100 = 'c0d0beda'
 MD5_SPI_V100 = '055445ac'
-BAKSUF = '.bak_head'          # git show HEAD:<path> 导出的 VER=100 原始态
+BAKSUF = '.bak_head'          # 从 bak_src/ 里那份"VER=100 原始态"导入
 
 
 def g(s):
@@ -30,7 +33,7 @@ def g(s):
 
 
 def restore_v100(path, want_md5):
-    bak = path + BAKSUF
+    bak = B.bak_path(path, BAKSUF)
     if not os.path.exists(bak):
         print('FAIL: %s missing' % bak)
         return None
@@ -40,8 +43,8 @@ def restore_v100(path, want_md5):
         print('FAIL: %s md5 %s != expected %s' % (bak, got, want_md5))
         return None
     open(path, 'wb').write(src)
-    open(path + '.bak_v101', 'wb').write(src)   # 回退点 = VER=100 原始态
-    print('restored %-14s from %s (md5 %s)' % (os.path.basename(path), BAKSUF, got))
+    B.save(path, '.bak_v101')                   # 回退点 = VER=100 原始态（写进 bak_src/）
+    print('restored %-14s from bak_src/%s (md5 %s)' % (os.path.basename(path), BAKSUF, got))
     return src
 
 

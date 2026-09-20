@@ -37,8 +37,8 @@
 ### 1.3 回退路径与指纹
 
 ```
-回 VER=98：  SPI_rx.c ← SPI_rx.c.bak_v100        + V5F_CDC_QUAT_ONLY 0u
-回 VER=97：  再恢复 v5f_tune.h.bak_v98 / proc_ekf.c.bak_v98
+回 VER=98：  SPI_rx.c ← bak_src/V5F/User/src/SPI_rx.c.bak_v100   + V5F_CDC_QUAT_ONLY 0u
+回 VER=97：  再恢复 bak_src/V5F/User/inc/v5f_tune.h.bak_v98 / bak_src/V5F/User/src/proc_ekf.c.bak_v98
 ```
 
 当前 md5（前 8 位）：`v5f_tune.h c0d0beda`、`proc_ekf.c 2a7080cb`、`SPI_rx.c 055445ac`

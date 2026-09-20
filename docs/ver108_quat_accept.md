@@ -38,11 +38,11 @@ python tools/ekf_session/patch_v108_quat_accept.py      # 幂等；重跑只做�
 ## 回退
 
 ```powershell
-Copy-Item V5F\User\inc\v5f_tune.h.bak_v108 V5F\User\inc\v5f_tune.h -Force   # 回到 VER=107 调试模式
+Copy-Item bak_src\V5F\User\inc\v5f_tune.h.bak_v108 V5F\User\inc\v5f_tune.h -Force   # 回到 VER=107 调试模式
 ```
 或只把 `V5F_CDC_QUAT_ONLY` 改回 `0u`（同一版本内来回切换，不影响其它任何东西）。
 
 ## 记录
 
-- 打补丁脚本：`tools/ekf_session/patch_v108_quat_accept.py`（备份 `v5f_tune.h.bak_v108` = 打补丁前原态）
+- 打补丁脚本：`tools/ekf_session/patch_v108_quat_accept.py`（备份 `bak_src/V5F/User/inc/v5f_tune.h.bak_v108` = 打补丁前原态；**不写在源码目录**）
 - 历史沿革：VER=100 验收模式(1u) → VER=101 切调试(0u) + `DEBUG_DIV=24u` → **VER=108 切回验收(1u)**

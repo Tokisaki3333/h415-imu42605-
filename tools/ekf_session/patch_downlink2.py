@@ -3,6 +3,27 @@
 import re
 import shutil
 
+# --- 备份重定向 shim（2026-09-21）：严禁把 *.bak* 写进源码目录（V5F/、Common/），
+#     IDE 按目录扫描会把它们当源文件包含；统一改写到 <repo>/bak_src/ 的镜像路径。
+import os as _os
+import shutil as _sh
+
+_REPO = r'C:\Users\33\Documents\v2\h415-imu42605-'
+_orig_copy2 = _sh.copy2
+
+
+def _copy2_redirect(src, dst, *a, **kw):
+    d = str(dst)
+    if '.bak' in d and d.lower().startswith(_REPO.lower()):
+        d = _os.path.join(_REPO, 'bak_src', _os.path.relpath(d, _REPO))
+        _os.makedirs(_os.path.dirname(d), exist_ok=True)
+        print('-- 备份(重定向到 bak_src) %s' % _os.path.relpath(d, _REPO))
+    return _orig_copy2(src, d, *a, **kw)
+
+
+_sh.copy2 = _copy2_redirect
+
+
 R = r'C:\Users\33\Documents\v2\h415-imu42605-'
 D = R + r'\Common\USBHS\ch32h417_usbhs_device.c'
 U = R + r'\V5F\User\src\USBCDC.c'

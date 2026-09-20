@@ -11,7 +11,8 @@
     本来就发 `g_v5f_hold.ekf.q[0..3]` + `00 00 80 7F` 共 20 B，并在调试抽帧之前 return。
     本脚本额外做**结构自检**，确认它没被 VER=101 的调试改动破坏。
 
-回退点：v5f_tune.h.bak_v108 = 打补丁前的 VER=107 调试模式内容。
+回退点：`bak_src/V5F/User/inc/v5f_tune.h.bak_v108`（= 打补丁前的 VER=107 调试模式内容）。
+注意：备份**绝不**写在 V5F/ 源码目录里（IDE 会扫目录并包含它们），统一走 bakpath.py。
 幂等：已是 VER=108/QUAT_ONLY=1u 则什么都不做。
 
 用法: python tools/ekf_session/patch_v108_quat_accept.py
@@ -21,12 +22,15 @@ import os
 import re
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bakpath as B          # 备份唯一合法去处：<repo>/bak_src/...
+
+ROOT = B.REPO
 TUNE = os.path.join(ROOT, 'V5F', 'User', 'inc', 'v5f_tune.h')
 SPI = os.path.join(ROOT, 'V5F', 'User', 'src', 'SPI_rx.c')
 NCH = 162
 FLAGS = 0x07
-BAK = TUNE + '.bak_v108'
+TAG = '.bak_v108'
 
 
 def g(s):
@@ -43,12 +47,12 @@ else:
     assert re.search(r'#define V5F_FW_VER\s+107u', d0), 'FW_VER 不是 107u，先确认基线'
     assert re.search(r'#define V5F_CDC_QUAT_ONLY 0u', d0), 'QUAT_ONLY 不是 0u，先确认基线'
 
-    # 回退点
-    if not os.path.exists(BAK):
-        open(BAK, 'wb').write(src)
-        print('backup  %s  (md5 %s)' % (os.path.basename(BAK), hashlib.md5(src).hexdigest()[:8]))
+    # 回退点（写到 bak_src/，不进源码目录）
+    if not B.exists(TUNE, TAG):
+        B.save(TUNE, TAG)
+        print('      md5 %s' % hashlib.md5(src).hexdigest()[:8])
     else:
-        print('backup  %s 已存在，保留不覆盖' % os.path.basename(BAK))
+        print('-- 备份已存在，保留不覆盖: %s' % os.path.relpath(B.bak_path(TUNE, TAG), ROOT))
 
     # 1) 输出模式块：QUAT_ONLY 0u -> 1u，注释改成 VER=108
     new = (g('#define V5F_CDC_QUAT_ONLY 1u   /* VER=108 输出模式（验收）:\n'
@@ -116,5 +120,15 @@ if iq >= 0:
 tag = (108 << 16) | (NCH << 8) | FLAGS
 print('\nfw_tag(调试帧第 76 列) 将由 7053831 变为 %d = (108<<16)|(162<<8)|7' % tag)
 print('注意: 验收模式的 20 B 流里没有 fw_tag/校验和，`rec.py`/`cols_162` 抓不到 A5 5A 帧属正常。')
+
+# ---------------- 守门：源码目录里绝不允许留下变体副本 ----------------
+left = B.strays()
+if left:
+    print('\n!! 源码树里发现 %d 个变体副本（IDE 会扫进去），请先跑：' % len(left))
+    print('   python tools/ekf_session/srcdir_clean.py --apply')
+    ok = False
+else:
+    print('源码树干净：V5F/ 与 Common/ 下无 *.bak_* / *.v### 残留')
+
 print('VERIFY', 'OK' if ok else 'FAIL')
 sys.exit(0 if ok else 1)

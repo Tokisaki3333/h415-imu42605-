@@ -24,7 +24,10 @@ import os
 import re
 import sys
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bakpath as B          # 备份唯一合法去处：<repo>/bak_src/...
+
+ROOT = B.REPO
 TUNE = os.path.join(ROOT, 'V5F', 'User', 'inc', 'v5f_tune.h')
 EKF = os.path.join(ROOT, 'V5F', 'User', 'src', 'proc_ekf.c')
 BAK = '.bak_v103_magvec'
@@ -36,8 +39,8 @@ def g(s):
 
 def patch(path, pairs):
     src = open(path, 'rb').read()
-    if os.path.exists(path + BAK) is False:
-        open(path + BAK, 'wb').write(src)
+    if not B.exists(path, BAK):
+        B.save(path, BAK)
     out = src
     for old, new, cnt in pairs:
         n = out.count(old)
