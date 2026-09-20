@@ -95,7 +95,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        100u
+#define V5F_FW_VER        101u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -111,8 +111,11 @@
  * 用于把 EKF 里的陀螺积分快照回溯到真正的 DRDY 时刻，钳 5 ms 防异常大值。 */
 #define V5F_MAG_RDAGE_MAX_TICK    500000ULL
 
-#define V5F_CDC_QUAT_ONLY 1u   /* VER=100: CDC(EP2) 只报 EKF 四元数(JustFloat: 4 float + 00 00 80 7F)
-                                * 置 0u 即切回旧 162 通道 JustFloat 日志, 其余一字不动 */
+#define V5F_CDC_QUAT_ONLY 0u   /* VER=101 输出模式:
+                                 *   1u = 验收: CDC(EP2) 只报 EKF 四元数
+                                 *        (JustFloat: 4 float + 00 00 80 7F, 20B/帧)
+                                 *   0u = 调试: 旧 162 通道 JustFloat 帧(654B/帧) */
+#define V5F_CDC_DEBUG_DIV 24u  /* VER=101 调试模式抽帧: 8080/24 = 337 Hz, 654B*337 = 220 kB/s */
 #define V5F_EKF_EN        1u      /* 阶段 1（S1）已落地：16 维 ESKF 影子模式 */
 #define V5F_DET_AC_EN     1u
 /* GSV 轮次间隔常量在 Common/Common/GPS.c 内定义：那个文件由 V3F 编译，看不到本头。 */

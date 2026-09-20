@@ -425,6 +425,19 @@ static void justfloat_report(void)
     }
     return;
 #endif
+    /* ---- VER=101 调试模式抽帧 ----
+     * 654B/帧 × 8.08kHz = 5.3MB/s，USB FS 与上位机都吃不下；
+     * 按 V5F_CDC_DEBUG_DIV 抽帧(默认 24 -> 337Hz)，放最前面省 CPU。
+     * 注意：clip 统计窗口(1000 帧)随之从 125ms 变成 ~3s；
+     *       报帧的 tick 列(tk - s_rep_last_tick)也变为跨 24 帧的间隔。 */
+#if (V5F_CDC_DEBUG_DIV > 1u)
+    {
+        static uint32_t s_div_n;
+        if (++s_div_n < (uint32_t)V5F_CDC_DEBUG_DIV) return;
+        s_div_n = 0u;
+    }
+#endif
+
     for (i = 0u; i < 4u; i++) ch[c++]     = g_v5f_hold.att.q[i];
     for (i = 0u; i < 3u; i++) ch[c++] = g_v5f_hold.vel.v_nav[i];
 
