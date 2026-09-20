@@ -95,7 +95,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        106u
+#define V5F_FW_VER        107u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -747,6 +747,11 @@
  * σ 依据本机实测：标定后地磁方向误差 p50 0.5 / p90 1.3 deg。 */
 #define V5F_EKF_MAG_VEC_SIG_DEG   0.9f
 #define V5F_EKF_MAG_VEC_K_MAX     0.10f
+/* VER=107 倾斜权置信度：实测倾角与模型差 ddip，c = 1/(1+(ddip/REF)^2)；
+ * 倾斜行 sigma_tilt = VEC_SIG_DEG / c（下限 CONF_MIN）。本台面实测 ddip~2.3 度
+ * => c~0.16 => 倾角权降 ~40 倍；干净环境 ddip->0 => c->1 全权参与。 */
+#define V5F_EKF_MAG_TILT_DDIP_REF_DEG  1.0f
+#define V5F_EKF_MAG_TILT_CONF_MIN      0.02f
 
 /* ★VER=82 K_MAX 0.05 -> 0.015：按实测的**非磁漂移速度**把环路放慢，降偏航抖动。
  * 一阶环总误差 = d*tau + s*sqrt(1/(2*tau*f))：

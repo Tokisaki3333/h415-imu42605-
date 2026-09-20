@@ -824,7 +824,8 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
 
     /* ---- VER=103 ÕæÇ£Òý£º»úÌåÏµ²Ð²î£¨²»×öÈÎºÎ×ËÌ¬Í¶Ó°£©-------------------- */
     {
-        float n1, c1, sg2, Sx[3][3];
+        float n1, c1, sg2, ddip, conf, Sx[3][3];
+        float gn_b[3];
         uint32_t ax2;
         bb[0] = Rt[0][0]*b0x + Rt[1][0]*b0y + Rt[2][0]*b0z;
         bb[1] = Rt[0][1]*b0x + Rt[1][1]*b0y + Rt[2][1]*b0z;
@@ -837,30 +838,43 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
          * ×¢Òâ²»ÄÜÐ´³É (m^ - b^) - (m^¡¤b^)b^£ºÄÇ¶à¼õÁËÒ»¸ö b^£¬
          * ËäÈ»ÔÙÍ¶Ó°µ½ ¡Íb^ ºóÊýÖµ±»Ïûµô£¬µ« H ¾Í²»ÔÙÊÇËüµÄ Jacobian£¨²»×ÔÇ¢£©¡£ */
         /* ¡Íb^ Æ½ÃæÕý½»»ù£ºe1 = normalize(z^ x b^)£¬e2 = b^ x e1 */
-        e1[0] = -bb[1]; e1[1] = bb[0]; e1[2] = 0.0f;
-        n1 = sqrtf(e1[0]*e1[0] + e1[1]*e1[1]);
-        if (n1 < 1e-4f) { e1[0] = 1.0f; e1[1] = 0.0f; e1[2] = 0.0f; }
-        else { e1[0] /= n1; e1[1] /= n1; e1[2] /= n1; }
+        /* ---- VER=107 ÃæÄÚ»ù£ºÊúÖ±»ù×¼ = **ÖØÁ¦Ê¸Á¿**£¨²»¼ÙÉè¼Ð¾ßË®Æ½£©----
+         * e1 = normalize(gn ¡Á b^_b)£ºÈÆÖØÁ¦Ðý×ª = º½Ïò±ä»¯£¬ËüÔÚ ¡Íb^ ÃæÄÚµÄÔË¶¯·½Ïò¡£
+         *   Æä**·½Ïò**Ö»È¡¾öÓÚ (gn, b^_b) ËùÔÚÆ½ÃæµÄ·¨Ïò => Óë´ÅÇã½ÇÄ£ÐÍÎó²îÎÞ¹Ø
+         *   £¨Êµ²â±í¹Û dip Ëæ»·¾³/Î»ÖÃ±ä 2~3 ¶È£¬ËùÒÔÆ«º½Í¨µÀ±ØÐëÓë dip ½âñî£©¡£
+         * e2 = b^_b ¡Á e1£ºÁíÒ»¸öÃæÄÚ·½Ïò£¬Ð¯´ø**ÇãÐ±**ÐÅÏ¢¡£ */
+        {
+            float ag = sqrtf(h->imu.accel_g[0]*h->imu.accel_g[0]
+                           + h->imu.accel_g[1]*h->imu.accel_g[1]
+                           + h->imu.accel_g[2]*h->imu.accel_g[2]);
+            if (ag < 1e-3f) return;
+            gn_b[0] = h->imu.accel_g[0] / ag;
+            gn_b[1] = h->imu.accel_g[1] / ag;
+            gn_b[2] = h->imu.accel_g[2] / ag;
+        }
+        e1[0] = gn_b[1]*bb[2] - gn_b[2]*bb[1];
+        e1[1] = gn_b[2]*bb[0] - gn_b[0]*bb[2];
+        e1[2] = gn_b[0]*bb[1] - gn_b[1]*bb[0];
+        n1 = sqrtf(e1[0]*e1[0] + e1[1]*e1[1] + e1[2]*e1[2]);
+        if (n1 < 1e-4f) {                     /* ÖØÁ¦Óë´Å³¡½üÆ½ÐÐ£¨²»¸Ã·¢Éú£©£ºÍË»Ø z^ »ù×¼ */
+            e1[0] = -bb[1]; e1[1] = bb[0]; e1[2] = 0.0f;
+            n1 = sqrtf(e1[0]*e1[0] + e1[1]*e1[1]);
+            if (n1 < 1e-6f) { e1[0] = 1.0f; e1[1] = 0.0f; e1[2] = 0.0f; n1 = 1.0f; }
+        }
+        e1[0] /= n1; e1[1] /= n1; e1[2] /= n1;
         e2[0] = bb[1]*e1[2] - bb[2]*e1[1];
         e2[1] = bb[2]*e1[0] - bb[0]*e1[2];
         e2[2] = bb[0]*e1[1] - bb[1]*e1[0];
-        /* ²Ð²î = Á¿²âÔÚ ¡Íb^ »ùÉÏµÄ·ÖÁ¿£¨e_i ¡Í b^_b => e_i¡¤(m^ - c1 b^) Óë e_i¡¤m^ ÍêÈ«Í¬Öµ£¬
-         * ÕâÀïÐ´ºóÕß£ºH = dh/dx ÓëËüÒ»Ò»¶ÔÓ¦£¬±ÜÃâ c1 µÄÐÎÊ½µ¼Êý»ì½øÀ´£©¡£ */
-        r2v[0] = e1[0]*mf[0] + e1[1]*mf[1] + e1[2]*mf[2];
-        r2v[1] = e2[0]*mf[0] + e2[1]*mf[1] + e2[2]*mf[2];
-        /* ÉÏ±¨**¼Ð½Ç** theta = angle(m^, b^_b) = atan2(|r|, m^¡¤b^)£¬
-         * ²»ÄÜÖ±½Ó±¨ |r|£¨ÄÇÊÇ sin(theta)£¬90 ¶ÈÊ±»áÏÔÊ¾³É 57.3 ¶È£©¡£ */
-        s_mag_r = atan2f(sqrtf(r2v[0]*r2v[0] + r2v[1]*r2v[1]), c1) * RAD2DEG;
-        s_mag_rx = r2v[0] * RAD2DEG;   /* VER=104 Õï¶ÏÁÐ¸Ä±¨ ¡Íb^ Á½Î¬ÐÂÏ¢(¶È) */
+        r2v[0] = e1[0]*mf[0] + e1[1]*mf[1] + e1[2]*mf[2];   /* º½ÏòÃô¸Ð·ÖÁ¿ */
+        r2v[1] = e2[0]*mf[0] + e2[1]*mf[1] + e2[2]*mf[2];   /* ÇãÐ±Ãô¸Ð·ÖÁ¿ */
+        s_mag_r  = atan2f(sqrtf(r2v[0]*r2v[0] + r2v[1]*r2v[1]), c1) * RAD2DEG;
+        s_mag_rx = r2v[0] * RAD2DEG;
         s_mag_ry = r2v[1] * RAD2DEG;
-        /* H ÐÐ = -e_i^T [b^]x£¨×÷ÓÃÔÚÐý×ªÊ¸Á¿ dx[6..8] ÉÏ£© */
+        /* H_i = +e_i^T [b^_b]x R^T£¨±ê×¼ÐÎÊ½ H = dh/dx£»»ùÔÚµ±Ç°¹À¼Æ´¦¶³½á£© */
         H_zero(2u);
         Sx[0][0] = 0.0f;   Sx[0][1] = -bb[2]; Sx[0][2] =  bb[1];
         Sx[1][0] = bb[2];  Sx[1][1] = 0.0f;   Sx[1][2] = -bb[0];
         Sx[2][0] = -bb[1]; Sx[2][1] = bb[0];  Sx[2][2] = 0.0f;
-        /* ÊÀ½çÏµÈÅ¶¯Ô¼¶¨£¨ekf_inject: q <- dq (x) q£©£ºH = -e_i^T [b^]x R^T
-         * ÓÚÊÇ H¡¤b^_n ¡Ô 0 ¡ª¡ª ×´Ì¬¿Õ¼äÀï"ÈÆ**ÊÀ½çÏµ´Å³¡Öá**Ðý×ª"ÎÞ¹Û²â£¨½á¹¹ÐÔÖÊ£©¡£
-         * £¨Ìå×ø±êÏµÔ¼¶¨»áÐ´³É -e_i^T[b^]x£¬Áã¿Õ¼äÊÇ b^_b£»Á½Õß²îÒ»¸ö R^T£¬Åª´í=·½ÏòÈ«´í£© */
         for (ax2 = 0u; ax2 < 3u; ax2++) {
             float w0, w1, w2;
             w0 = Sx[0][0]*Rt[ax2][0] + Sx[0][1]*Rt[ax2][1] + Sx[0][2]*Rt[ax2][2];
@@ -869,10 +883,32 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
             s_H[0][IX_Q + ax2] = e1[0]*w0 + e1[1]*w1 + e1[2]*w2;
             s_H[1][IX_Q + ax2] = e2[0]*w0 + e2[1]*w1 + e2[2]*w2;
         }
+        /* ---- ÇãÐ±È¨µÄÖÃÐÅ¶È£ºÁ½Õß¶¼ÓÃ**ÖØÁ¦**×öÊúÖ±»ù×¼ ----
+         * dip_m = 90 - angle(m^, gn)£¨Óë×ËÌ¬ÎÞ¹Ø¡¢Óë¼Ð¾ßÊÇ·ñË®Æ½ÎÞ¹Ø£©£»
+         * ddip = |dip_m - Ä£ÐÍÇã½Ç|£»»·¾³»û±ä/Ä£ÐÍÊ§ÅäÔ½´ó -> c Ô½Ð¡ -> ÇãÐ±ÐÐ R Ô½´ó¡£
+         * ¸É¾»»·¾³ ddip->0 => c->1 => ´ÅµÄÇãÐ±ÐÅÏ¢°´ sigma_yaw Õý³£Ê¹ÓÃ¡£ */
+        {
+            float cm = mf[0]*gn_b[0] + mf[1]*gn_b[1] + mf[2]*gn_b[2];
+            float dip_m, dip_0;
+            if (cm >  1.0f) cm =  1.0f;
+            if (cm < -1.0f) cm = -1.0f;
+            /* ç£åœºæœä¸‹æ—¶ angle(m^,gn) = 90 + Iï¼Œæ‰€ä»¥ dip_m = angle - 90ï¼ˆ= +Iï¼‰ï¼›
+             * å†™æˆ 90 - angle ä¼šå¾— -57 åº¦ï¼Œä½¿ä¿¡åº¦æ°¸è¿œåŽ‹åˆ°ä¸‹é™ */
+            dip_m = acosf(cm) * RAD2DEG - 90.0f;
+            dip_0 = atanf(V5F_EKF_DIP_TAN) * RAD2DEG;
+            ddip  = fabsf(dip_m - dip_0);
+            conf  = 1.0f / (1.0f + (ddip / V5F_EKF_MAG_TILT_DDIP_REF_DEG)
+                                   * (ddip / V5F_EKF_MAG_TILT_DDIP_REF_DEG));
+            if (conf < V5F_EKF_MAG_TILT_CONF_MIN) conf = V5F_EKF_MAG_TILT_CONF_MIN;
+        }
         sg2 = V5F_EKF_MAG_VEC_SIG_DEG * DEG2RAD;
-        sg2 = sg2 * sg2;
-        RRv[0] = sg2; RRv[1] = 0.0f; RRv[2] = 0.0f; RRv[3] = sg2;
-        s_mag_rs = 1.0f;                 /* ÕæÇ£Òý²»ÔÙÓÃ R ·Å´óÈ¥Ñ¹Í¶Ó°ñîºÏ */
+        RRv[0] = sg2 * sg2;                       /* º½ÏòÐÐ£º¸ßÖÃÐÅ */
+        RRv[1] = 0.0f; RRv[2] = 0.0f;
+        {
+            float st = V5F_EKF_MAG_VEC_SIG_DEG / conf;    /* ÇãÐ±ÐÐ£º°´ÖÃÐÅ¶È½µÈ¨ */
+            RRv[3] = (st * DEG2RAD) * (st * DEG2RAD);
+            s_mag_rs = (st / V5F_EKF_MAG_VEC_SIG_DEG) * (st / V5F_EKF_MAG_VEC_SIG_DEG);
+        }
     }
 
     /* ---- VER=103 ¹²ÓÃÃÅ£º²Ð²îÉÏÏÞ + Í¬Ò»´ÅÑù±¾²»ÖØ¸´¸üÐÂ -------------------
