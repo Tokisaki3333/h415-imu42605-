@@ -95,7 +95,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        101u
+#define V5F_FW_VER        102u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -401,10 +401,15 @@
  * NOTE: absolute yaw of A is an UNOBSERVABLE mode (no absolute heading reference in
  *       the data); firmware boot mag alignment (proc_ekf.c azi/dpsi) absorbs it.
  * old A_INIT feat.err on this data was static 0.864/1.120 deg. */
-#define V5F_MAG_A_INIT  { { +3.81325625e-05f, -5.66107252e-03f, +2.54619260e-04f }, \
-                          { -5.82530312e-03f, +3.76914590e-04f, -6.94443501e-05f }, \
-                          { +3.71176765e-04f, +9.12383261e-04f, +6.18344879e-03f } }
-#define V5F_MAG_C_INIT  { +2.92853003e-02f, +2.09102037e-02f, +1.88805815e-02f }
+/* VER=102 mag calib (2026-09-21 capture R:\imu_20260921_022718.bin, 30106 帧 / 90 s):
+ * attitude-aided 9-param fit, reference = legacy gyro attitude (per-frame),
+ * soft weight 1/(1+(w/20dps)^2); |y| normalized so median|y| = 1.
+ * 校验: 秩判据零空间=1, 半分 ‖A1-A2‖/‖A‖=2.7%, 方向残差 静态 p50 3.53->0.95 deg,
+ *       全场 p50 2.78->0.48 deg (C 的硬铁项近似减半, z 项 -> 0 是主要改善来源) */
+#define V5F_MAG_A_INIT  { { +7.82513172e-05f, -6.10340235e-03f, -7.24195460e-05f }, \
+                          { -5.97676400e-03f, -1.84772880e-05f, -1.84887488e-05f }, \
+                          { +3.76624289e-04f, +7.79929442e-04f, +6.05283507e-03f } }
+#define V5F_MAG_C_INIT  { +1.41276398e-02f, +9.17333192e-03f, -1.31003127e-04f }
 /* ---- 磁力计"自己认为的维度"输出的参数（只读输出，不参与修正） ---- */
 #define V5F_MAG_DECL_DEG   (-7.53f)  /* 磁偏角 D：来源 WMM/IGRF（ArduPilot AP_Declination
                                       * 的 10 度派生表 + 双线性插值）@ 36.23N 120.44E。

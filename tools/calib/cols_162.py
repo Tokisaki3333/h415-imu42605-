@@ -82,7 +82,7 @@ ANCHOR = {
     'mag_ok': 154, 'tick_tk': 159, 'tick_md': 160, 'checksum': 161,
 }
 
-VER_EXPECT = 101
+VER_EXPECT = 102
 FW_TAG_EXPECT = (VER_EXPECT << 16) | (NCH << 8) | 0x07   # flags: EKF_EN|MAG_CAL_EN|DET_AC_EN
 
 # 固件帧尾校验和：SPI_rx.c `uint16_t xk = 0x5A5Au;` + 对前 (NCH-1) 个 float 的字节做 XOR，
