@@ -135,7 +135,6 @@ static float    s_mag_age_ms;
 static float    s_tilt_bad_s;         /* ★VER=84 倾角参考连续失效时长(s) */
 static float    s_tilt_inv_ms;        /* ★VER=84 上报：倾角参考失效时长(ms) */
 static uint8_t  s_grav_ok;            /* ★VER=84 上报：重力观测门状态 */
-static float    s_tilt_sig_deg;       /* ★VER=84 上报：倾角 1sigma(度) */
 static float    s_mag_rs;             /* ★VER=84 上报：磁 R 放大倍数 */
 static uint8_t  s_mag_hold;           /* ★VER=84 上报：磁因倾角失效被暂停 */         /* ★VER=83 上报：磁数据到使用时刻的年龄 (ms) */
 static uint32_t s_mag_cnt_upd;        /* ★VER=73 上一次真正施加磁观测时的 ist 样本号 */
@@ -639,13 +638,8 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
 {
     float rg[2], Rt[3][3], Bn[3], mf[3], ab[3], mh[3], xv[3], crs3[3];
     float fp[3], mh2[3], crs4[3], b0v[3], up_nav[3];
-#if (V5F_EKF_MAG_MODE != 0u)
     float bb[3], e1[3], e2[3], r2v[2], RRv[4];   /* VER=103 真牵引用 */
-#endif
     float fhb2, ci, b0x, b0y, b0z;
-#if (V5F_EKF_MAG_MODE == 0u)
-    float R[1], r[1];              /* 只有旧标量模式用（模式 1 走向量量测）*/
-#endif
     float dpar, mhn, xvn, thm, thp, psih, dp2, mh2n, an2, cc;
     uint8_t st;
     uint32_t i;
@@ -693,23 +687,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     b0z = -V5F_EKF_DIP_TAN * ci;
     /* ★VER=84 R 含倾角不确定度项：磁新息对倾角误差的灵敏度 =
      * tan(dip) = V5F_EKF_DIP_TAN = 2.08，所以 sigma_tilt 会以 2.08 倍混进偏航新息。 */
-#if (V5F_EKF_MAG_MODE == 0u)
-    /* 旧 R 模型 R^2 = R0^2 + (tan(dip)*sigma_tilt)^2 —— 只有标量模式用；
-     * 模式 1 的真牵引用物理 sigma（V5F_EKF_MAG_VEC_SIG_DEG），不需要这个放大。 */
-    s_tilt_sig_deg = sqrtf(s_P[6][6] + s_P[7][7]) * RAD2DEG;
-    {
-        float mr = V5F_EKF_MAG_R_DEG * DEG2RAD;      /* ★VER=87 总不确定度 */
-        float rb = mr * mr;
-        float stc = s_tilt_sig_deg;                    /* VER=98 膨胀项输入钳位 */
-        float dl;
-        if (stc > V5F_EKF_MAG_TILT_CAP_DEG) stc = V5F_EKF_MAG_TILT_CAP_DEG;
-        dl = V5F_EKF_DIP_TAN * (stc * DEG2RAD);
-        float ra = rb + dl * dl;
-        if (ra > rb * V5F_EKF_MAG_RSCALE_MAX) ra = rb * V5F_EKF_MAG_RSCALE_MAX;
-        R[0] = ra;
-        s_mag_rs = ra / rb;
-    }
-#endif
 
     /* ---- 几何诊断（导航系水平二维残差；定义不变，供日志与整角对齐用） ---- */
     q_to_R(&s_x[IX_Q], Rt);
@@ -788,11 +765,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     crs4[2] = ab[0]*mh2[1] - ab[1]*mh2[0];
     thp = atan2f((crs4[0]*xv[0] + crs4[1]*xv[1] + crs4[2]*xv[2]) / (mh2n*xvn),
                  (mh2[0]*xv[0] + mh2[1]*xv[1] + mh2[2]*xv[2]) / (mh2n*xvn));
-#if (V5F_EKF_MAG_MODE == 0u)
-    /* 旧标量新息：只有模式 0 用；模式 1 的 s_mag_r 在下面按向量残差算 */
-    r[0] = wrap_pi(thm - thp);                  /* 参考轴 xv 在两式里相消 */
-    s_mag_r = fabsf(r[0]) * RAD2DEG;
-#endif
     s_mag_cmp_thm = thm * RAD2DEG;
     s_mag_cmp_thp = thp * RAD2DEG;
     {
@@ -851,7 +823,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     }
 
     /* ---- VER=103 真牵引：机体系残差（不做任何姿态投影）-------------------- */
-#if (V5F_EKF_MAG_MODE != 0u)
     {
         float n1, c1, sg2, Sx[3][3];
         uint32_t ax2;
@@ -903,7 +874,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         RRv[0] = sg2; RRv[1] = 0.0f; RRv[2] = 0.0f; RRv[3] = sg2;
         s_mag_rs = 1.0f;                 /* 真牵引不再用 R 放大去压投影耦合 */
     }
-#endif
 
     /* ---- VER=103 共用门：残差上限 + 同一磁样本不重复更新 -------------------
      * **不再有"运动中禁磁"**：合法性由外门给（gate->ekf_mag_yaw = |mag_norm-1| < MAG_ERR_LIM，只看模）；
@@ -922,19 +892,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         s_mag_cnt_upd = icm;
     }
 
-#if (V5F_EKF_MAG_MODE == 0u)
-    /* ---------------- 模式 0：旧标量牵引（保留回退） ---------------- */
-    if (s_mag_r < V5F_EKF_MAG_DEAD_DEG) return;   /* R[0] 已在上面 R 模型块里设好 */
-    st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
-                    0x0100u, V5F_EKF_MAG_K_MAX);
-    if (st == 0u) {
-        s_gate_bits |= V5F_EKF_GB_MAG;
-        s_mag_used = 1u;
-        s_mag_dqx = s_dx[IX_Q + 0] * RAD2DEG;
-        s_mag_dqy = s_dx[IX_Q + 1] * RAD2DEG;
-        s_mag_dqz = s_dx[IX_Q + 2] * RAD2DEG;
-    }
-#else
     /* ---------------- 模式 1：真牵引（2 维向量量测） ---------------- */
     st = ekf_update(RRv, 2u, r2v, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
                     0x01C0u, V5F_EKF_MAG_VEC_K_MAX);
@@ -947,7 +904,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     } else {
         s_mag_dqx = 0.0f; s_mag_dqy = 0.0f; s_mag_dqz = 0.0f;
     }
-#endif
 
 }
 
