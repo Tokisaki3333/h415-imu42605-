@@ -85,6 +85,18 @@ ANCHOR = {
 VER_EXPECT = 101
 FW_TAG_EXPECT = (VER_EXPECT << 16) | (NCH << 8) | 0x07   # flags: EKF_EN|MAG_CAL_EN|DET_AC_EN
 
+# 固件帧尾校验和：SPI_rx.c `uint16_t xk = 0x5A5Au;` + 对前 (NCH-1) 个 float 的字节做 XOR，
+# 结果以 float 存在最后一列。注意**有种子 0x5A5A**，所以值域是 0x5A00~0x5AFF 那一带。
+CHK_SEED = 0x5A5A
+
+
+def chk(payload_upto_last):
+    """payload_upto_last = 一帧里前 (NCH-1) 个 float 的原始字节。"""
+    x = CHK_SEED
+    for b in payload_upto_last:
+        x ^= b
+    return x
+
 
 def selfcheck(verbose=True):
     ok = True
@@ -183,11 +195,8 @@ def load_frames(path, max_frames=None):
         good = 0
         for k in range(0, min(m, 200)):
             fr = f[k]
-            xk = 0
-            b = fr[:NCH - 1].astype('<f4').tobytes()
-            for byte in b:
-                xk ^= byte
-            if abs(float(fr[CH_162['checksum']]) - float(xk & 0xFF)) < 0.5:
+            xk = chk(fr[:NCH - 1].astype('<f4').tobytes())
+            if abs(float(fr[CH_162['checksum']]) - float(xk)) < 0.5:
                 good += 1
         info.setdefault('cand', []).append((p, t0, good / min(m, 200)))
         if best is None or good > best[2]:
@@ -214,10 +223,7 @@ def frame_report(a, info=None):
     ok = 0
     for k in range(min(len(a), 300)):
         fr = a[k]
-        xk = 0
-        for byte in fr[:NCH - 1].astype('<f4').tobytes():
-            xk ^= byte
-        if abs(float(fr[CH_162['checksum']]) - float(xk & 0xFF)) < 0.5:
+        if abs(float(fr[CH_162['checksum']]) - float(chk(fr[:NCH - 1].astype('<f4').tobytes()))) < 0.5:
             ok += 1
     rep['checksum_ok'] = ok / min(len(a), 300)
     q = a[:, CH_162['att_q0']:CH_162['att_q0'] + 4]

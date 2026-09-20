@@ -39,10 +39,8 @@ def synth(n=400, framed=True):
         fr[C.CH_162['mag_lsb0']:C.CH_162['mag_lsb0'] + 3] = [100, -40, 60]
         fr[C.CH_162['ist_cnt']] = k // 2
         fr[C.CH_162['fw_tag']] = tag
-        xk = 0
-        for b in fr[:C.NCH - 1].astype('<f4').tobytes():
-            xk ^= b
-        fr[C.NCH - 1] = float(xk & 0xFF)
+        xk = C.chk(fr[:C.NCH - 1].astype('<f4').tobytes())
+        fr[C.NCH - 1] = float(xk)
         pay = fr.tobytes()
         frames.append(R.HDR + struct.pack('<H', len(pay)) + pay + R.TL if framed else pay)
     return frames, tag, nch

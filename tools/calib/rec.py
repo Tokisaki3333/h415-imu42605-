@@ -94,11 +94,11 @@ class Parser:
                 tag = float(f[76])
                 if self.tag_seen is None:
                     self.tag_seen = tag
-                xk = 0
+                xk = 0x5A5A          # 与固件 SPI_rx.c `uint16_t xk = 0x5A5Au;` 一致
                 for b in frame[4:4 + (nch - 1) * 4]:
                     xk ^= b
                 self.chk_n += 1
-                if abs(float(f[nch - 1]) - float(xk & 0xFF)) < 0.5:
+                if abs(float(f[nch - 1]) - float(xk)) < 0.5:
                     self.chk_ok += 1
                 if abs(q - 1.0) > 2e-3:
                     self.qbad += 1

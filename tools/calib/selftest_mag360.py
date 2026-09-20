@@ -75,10 +75,7 @@ def make_log(n=12000, mode='sphere', seed=1, payload_only=False, phase=37):
     frames[:, c['temp_celsius']] = 30.0
     frames[:, c['fw_tag']] = float(C.FW_TAG_EXPECT)
     for i in range(n):
-        xk = 0
-        for byte in frames[i, :C.NCH - 1].astype('<f4').tobytes():
-            xk ^= byte
-        frames[i, C.NCH - 1] = float(xk & 0xFF)
+        frames[i, C.NCH - 1] = float(C.chk(frames[i, :C.NCH - 1].astype('<f4').tobytes()))
     raw = frames.tobytes()
     pl = C.NCH * 4
     if payload_only:
