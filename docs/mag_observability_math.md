@@ -344,6 +344,6 @@ M6 残差回到 <0.5°、而磁新息仍保持 ~0.5°（即"磁与重力不再�
   地磁工作完之后，EKF 的标度型残差只剩 **+82 ppm / 1.58° rms**。
 
 **动画复现**：python tools/calib/mag_anim.py R:\imu_20260921_030649.bin --fps 10
-（四格：3D 姿态 + 场向量 / 不变量残差 EKF vs 旧链 / 角速率与削顶 / yaw-tilt 修正与 mag_rs；
-静态预览图见 docs/img_mag_effect_preview.png，t=7.5 s。注意 matplotlib 不能直接写 subst 盘（R:），
+（四格：3D 姿态+场向量 / 不变量残差 vs 旧链 / 角速率与削顶 / yaw-tilt 修正与 mag_rs；
+静态预览图见 docs/img_mag_show_preview.png，t=7.5 s。注意 matplotlib 不能直接写 subst 盘（R:），
 先写本地再拷。）
