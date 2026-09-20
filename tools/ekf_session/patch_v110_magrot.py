@@ -37,7 +37,8 @@ C_NEW = [+1.67202500e-02, +1.75671478e-03, +1.05098948e-03]
 
 
 def g(s):
-    return s.encode('gbk')
+    # 注释里可能有 GBK 编不出的符号（=> / 警告 等）：replace 掉，绝不让它中断补丁
+    return s.encode('gbk', errors='replace')
 
 
 def main():
