@@ -905,11 +905,9 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         RRv[0] = sg2 * sg2;                       /* 航向行：高置信 */
         RRv[1] = 0.0f; RRv[2] = 0.0f;
         {
-            float st = V5F_EKF_MAG_VEC_SIG_TILT_DEG / conf;
-            if (st < V5F_EKF_MAG_VEC_SIG_DEG) st = V5F_EKF_MAG_VEC_SIG_DEG;
-            if (st > V5F_EKF_MAG_VEC_TILT_SIG_MAX_DEG) st = V5F_EKF_MAG_VEC_TILT_SIG_MAX_DEG;    /* 倾斜行：按置信度降权 */
+            float st = V5F_EKF_MAG_VEC_SIG_DEG / conf;    /* 倾斜行：按置信度降权 */
             RRv[3] = (st * DEG2RAD) * (st * DEG2RAD);
-            s_mag_rs = (1.0f / conf) * (1.0f / conf);
+            s_mag_rs = (st / V5F_EKF_MAG_VEC_SIG_DEG) * (st / V5F_EKF_MAG_VEC_SIG_DEG);
         }
     }
 
