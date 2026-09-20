@@ -100,7 +100,7 @@ python tools/calib/mag360_cal.py "R:\imu_20260916_101530.bin"
 
 ---
 
-## 4. 写回固件 + 回归验收
+## 5. 写回固件 + 回归验收
 
 1. 把生成的 4 行宏粘到 `V5F/User/inc/v5f_tune.h` 的 `V5F_MAG_A_INIT` / `V5F_MAG_C_INIT`
    （GBK 文件，用 `tools/ekf_session/` 里的字节级补丁脚本改，别用 UTF-8 编辑器直接存）。
