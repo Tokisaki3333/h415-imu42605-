@@ -24,7 +24,7 @@ import numpy as np
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 EKF = os.path.join(ROOT, 'V5F', 'User', 'src', 'proc_ekf.c')
 TUNE = os.path.join(ROOT, 'V5F', 'User', 'inc', 'v5f_tune.h')
-VER = 105
+VER = 106
 
 
 def quat_to_R(q):
