@@ -58,35 +58,31 @@
 
 ---
 
-## 3. 串口录制（仓库自带 `tools/calib/rec.py`）
+## 3. 串口录制（`tools/calib/rec.py`，只有一个动作）
 
 ```bash
-python tools/calib/rec.py --list                     # 列串口（WCH-Link 那个不是 IMU 口）
-python tools/calib/rec.py --selftest                 # 无硬件自检：合成流->解析->文本回读
-python tools/calib/rec.py -p COM5 -t 90 --seg        # 录 90 s，按上面的动作协议分段提示
-python tools/calib/rec.py -p COM5 -t 60 --bin raw.bin   # 同时落 648 B/帧 纯 payload 二进制
+python tools/calib/rec.py          # 默认 COM4，录到 Ctrl-C
+python tools/calib/rec.py 90       # 录 90 秒
+python tools/calib/rec.py 90 --port COM7   # 仅当口不是 COM4
 ```
 
-- 输出默认 `serial_runtime_<时间戳>_export.txt`，与历史录像**逐字节同格式**
-  （`=== Serial logging started ... ===` + `[HH:MM:SS.mmm] [RX] A5 5A ... 5A A5`），
-  所以 `mag360_cal.py`、`jf_load.py`、以及全部旧分析脚本直接可用。
-- 录制中逐帧校验：帧头/长度/帧尾、`|att.q|≈1`、`dt_us`、**`fw_tag`（从源码现算，不写死）**、
-  逐帧校验和；每 20 s 报一次 好帧/坏帧/丢字节/Hz/校验和通过率，结束给判定。
-- `--seg` 会把每段动作写成 `# ==== [t s] 第 k/N 段 ... ====` 注释行进日志（分析时可切段）。
-- 6 s 内解析不出 `A5 5A` 帧时，脚本会明确提示：固件还是**验收模式**（20 B JustFloat 无帧头）⇒
-  要么用 `tools/calib/cap.py`（认帧尾 `00 00 80 7F`，带自动重连+按帧分频二进制落盘），
-  要么把 `V5F_CDC_QUAT_ONLY` 改回 `0u` 重编。
-- 历史遗留：`tools/ekf_session/recv_v9.py`（A5 5A + 二进制 `R:\raw_v9.bin` + 下行命令闭环）
-  是 VER=9/83ch 时代的，列号虽仍对（fw_tag=76, dt=25, cmd_*=77..79），但默认路径与假设过时，不建议用来录标定数据。
+- 串口**默认 COM4**（隐式）；波特率对 USB CDC 无意义，固定 921600。
+- 落地**固定** `R:\imu_YYYYmmdd_HHMMSS.bin`（原始 A5 5A 字节流；R 盘不可用直接报错退出）。
+- 录制中每 10 s 打印 好帧/坏帧/重同步丢字节/校验和通过率/速率/大小；结束打印汇总与判定。
+- 逐帧校验：帧头/长度/帧尾、`|att.q|≈1`、`dt_us`、**`fw_tag`（从源码现算，不写死）**、逐帧校验和。
+- 6 s 内没有 `A5 5A` 帧会直接提示：固件可能还是**验收模式**（20 B JustFloat 无帧头）⇒
+  用 `tools/calib/cap.py`，或把 `V5F_CDC_QUAT_ONLY` 改回 `0u` 重编。
+- 无硬件自检：`python tools/calib/selftest_rec.py`（带帧 / 纯 payload 两种落盘都能回读，逐列一致）。
+- 历史遗留 `tools/ekf_session/recv_v9.py`（VER=9/83ch 时代、写 `R:\raw_v9.bin`）不再使用。
 
-然后一键标定：
+## 4. 一键标定
+
+`.bin` 与历史 hex 文本（`serial_runtime_*_export.txt`）**都能直接读**：
 
 ```bash
-python tools/calib/mag360_cal.py serial_runtime_XXXX_export.txt
+python tools/calib/mag360_cal.py "R:\imu_20260916_101530.bin"
 # 可选: --wmax 40 --amag 0.02 --static-only --out my.magcal.txt
 ```
-
-## 3b. 一键标定
 
 工具做的事与判据：
 

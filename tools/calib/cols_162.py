@@ -122,14 +122,23 @@ def _hex_bytes(path):
     return bytes(buf)
 
 
+def _read_stream(path):
+    """两种落盘都可能：hex 文本(历史 serial_runtime_*_export.txt) 或 二进制(rec.py 的 .bin)。"""
+    head = open(path, 'rb').read(4096)
+    if b'[RX]' in head or head.lstrip()[:3] == b'===':
+        return _hex_bytes(path), 'text'
+    return open(path, 'rb').read(), 'bin'
+
+
 def load_frames(path, max_frames=None):
-    """返回 (np.ndarray(N,162) float32, info dict)。自动识别两种落盘格式：
-       A) 带帧：A5 5A | len(u16 LE)=648 | payload | 5A A5
+    """返回 (np.ndarray(N,162) float32, info dict)。自动识别：
+       A) 带帧：A5 5A | len(u16 LE)=648 | payload | 5A A5   （rec.py 的 .bin 与旧文本都是这种）
        B) 无帧：纯 payload 流（用 fw_tag 常值 + 校验和定相位）
+       输入可以是 hex 文本，也可以是二进制文件。
     """
-    raw = _hex_bytes(path)
+    raw, src = _read_stream(path)
     pl = NCH * 4
-    info = {'bytes': len(raw)}
+    info = {'bytes': len(raw), 'src': src}
 
     # --- A) 带帧扫描 ---
     import struct
@@ -158,7 +167,7 @@ def load_frames(path, max_frames=None):
         if len(raw) < (p + 1) * 4 + pl * 8:
             continue
         a = np.frombuffer(raw[p * 4:], dtype='<f4')
-        m = (a.size - CH_162['fw_tag']) // NCH
+        m = a.size // NCH
         if m < 16:
             continue
         f = a[:m * NCH].reshape(m, NCH)
