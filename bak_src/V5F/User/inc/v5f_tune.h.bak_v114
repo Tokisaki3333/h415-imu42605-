@@ -1,8 +1,3 @@
-/* VER=114 磁标定：azimuth from legacy att.q chain (gyro-integrated, <1deg over 20s), tilt from raw accel; det<0; dip +/-0.67deg on 6 captures, yaw slope +1.009/+0.999
- *  形状=显式参数化(中心+log半轴+旋转)GN，合成自测形状误差 0.058%；
- *  取向=重力对齐到 WMM2025 I=54.330 deg @36.23N 120.44E；
- *  拟合集 dip ±0.11 deg、留出校验集 ±0.26 deg、mag_rs 1.1（改前 2125~2500）。
- *  详见 docs/mag_observability_math.md 7.10~7.16 */
 /* VER=113 磁标定：det<0 (left-handed mag frame) - verified by yaw slope +1.022 vs -1.015 for det>0
  *  形状=显式参数化(中心+log半轴+旋转)GN，合成自测形状误差 0.058%；
  *  取向=重力对齐到 WMM2025 I=54.330 deg @36.23N 120.44E；
@@ -130,7 +125,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        114u
+#define V5F_FW_VER        113u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -443,10 +438,10 @@
  * soft weight 1/(1+(w/20dps)^2); |y| normalized so median|y| = 1.
  * 校验: 秩判据零空间=1, 半分 ‖A1-A2‖/‖A‖=2.7%, 方向残差 静态 p50 3.53->0.95 deg,
  *       全场 p50 2.78->0.48 deg (C 的硬铁项近似减半, z 项 -> 0 是主要改善来源) */
-#define V5F_MAG_A_INIT  { { -1.36027568e-03f, -5.85658605e-03f, -3.98138235e-04f }, \
-                          { -5.88783654e-03f, +1.42495667e-03f, -1.41592015e-04f }, \
-                          { +9.07314301e-05f, +3.31179736e-04f, +6.13699343e-03f } }
-#define V5F_MAG_C_INIT  { +1.63036225e-02f, -1.31800427e-02f, +7.34305183e-03f }
+#define V5F_MAG_A_INIT  { { -3.19517602e-04f, -6.00800368e-03f, -2.59830950e-04f }, \
+                          { -5.56532058e-03f, +2.43963223e-04f, +2.43422020e-04f }, \
+                          { +4.69964369e-05f, -8.35525544e-04f, +5.62562703e-03f } }
+#define V5F_MAG_C_INIT  { +1.95672232e-02f, +1.43686523e-03f, -5.45993322e-03f }
 /* ---- 磁力计"自己认为的维度"输出的参数（只读输出，不参与修正） ---- */
 #define V5F_MAG_DECL_DEG   (-7.53f)  /* 磁偏角 D：来源 WMM/IGRF（ArduPilot AP_Declination
                                       * 的 10 度派生表 + 双线性插值）@ 36.23N 120.44E。
