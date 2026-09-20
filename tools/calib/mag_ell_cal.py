@@ -50,23 +50,32 @@ def wmm_i(lat, lon, year):
 
 
 def ellipsoid_fit(u):
-    """|A u + C| = const 的线性最小二乘。返回 A(上三角, det>0)、C，标度未定（|y|≈1）。"""
-    x, y, z = u[:, 0], u[:, 1], u[:, 2]
+    """|A u + C| = const 的线性最小二乘。返回 A(上三角, det>0)、C，标度未定（|y|≈1）。
+
+    先中心化+归一化再拟合（加速度计原始 LSB 可达 ±32768 且球心远离原点，
+    直接用 "u^T M u + b.u = 1" 参数化会病态到 NaN）。
+    """
+    mu = u.mean(0)
+    su = u.std(0) + 1e-12
+    v = (u - mu) / su
+    x, y, z = v[:, 0], v[:, 1], v[:, 2]
     D = np.stack([x * x, y * y, z * z, 2 * x * y, 2 * x * z, 2 * y * z, x, y, z], 1)
-    sol, *_ = np.linalg.lstsq(D, np.ones(len(u)), rcond=None)
+    sol, *_ = np.linalg.lstsq(D, np.ones(len(v)), rcond=None)
     Mx = np.array([[sol[0], sol[3], sol[4]],
                    [sol[3], sol[1], sol[5]],
                    [sol[4], sol[5], sol[2]]])
     b = sol[6:9]
-    # u^T M u + b.u = 1  ->  C = -0.5 M^-1 b,  |A u + C| = R
     Ci = -0.5 * np.linalg.solve(Mx, b)
-    R = np.sqrt(1.0 + Ci @ Mx @ Ci)
+    R = np.sqrt(max(1.0 + Ci @ Mx @ Ci, 1e-30))
     try:
-        A = np.linalg.cholesky(Mx / R ** 2).T        # A^T A = M/R^2, det>0
+        Av = np.linalg.cholesky(Mx / R ** 2).T        # Av^T Av = Mx/R^2, det>0
     except np.linalg.LinAlgError:
         w, V = np.linalg.eigh(Mx)
-        A = np.diag(np.sqrt(np.maximum(w, 1e-12))) @ V.T
-    return A, Ci / R
+        Av = np.diag(np.sqrt(np.maximum(w, 1e-12))) @ V.T
+    Cv = Ci / R
+    # 回到原尺度：y = Av·((u-mu)/su) + Cv  =>  A = Av/su（按列）, C = Cv - A·mu
+    A = Av / su
+    return A, Cv - A @ mu
 
 
 def dip_angle(y, gh):
