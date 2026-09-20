@@ -214,8 +214,8 @@ def c_block(A, Cv):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('log')
-    ap.add_argument('--wmax', type=float, default=50.0)
-    ap.add_argument('--amag', type=float, default=0.02)
+    ap.add_argument('--wmax', type=float, default=1000.0)
+    ap.add_argument('--amag', type=float, default=1.0)   # 不要用它判覆盖：姿态辅助标定不需要重力有效
     ap.add_argument('--static-only', action='store_true')
     ap.add_argument('--soft-w', type=float, default=20.0)
     ap.add_argument('--out', default=None)
