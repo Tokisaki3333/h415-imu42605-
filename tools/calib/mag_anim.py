@@ -79,7 +79,7 @@ def seg(p, o, r=1.0):
     return ([o[0], o[0] + r * p[0, 0]], [o[1], o[1] + r * p[1, 0]], [o[2], o[2] + r * p[2, 0]])
 
 
-def draw_frame(fig, axs, D, k, tlim):
+def draw_frame(fig, axs, D, k, cursors=None):
     ax3, ax2, ax1, ax4 = axs
     R = D['R_ekf'][k]
     ax3.clear()
@@ -108,14 +108,10 @@ def draw_frame(fig, axs, D, k, tlim):
     ax3.set_title('t=%5.2fs  |w|=%4.0f dps  theta=%4.1f°  残差 EKF %4.1f° / 旧链 %5.1f°'
                   % (D['t'][k], D['w'][k], D['th'][k], D['res_e'][k], D['res_l'][k]), fontsize=9)
 
-    for ax, xlim in ((ax2, None), (ax1, None), (ax4, None)):
-        for ln in ax.lines:
-            if ln.get_label() == 'cur':
-                ln.remove()
-    for ax in (ax2, ax1, ax4):
-        xl = tlim if xlim is None else xlim
-        ax.plot([D['t'][k], D['t'][k]], ax.get_ylim(), color='k', lw=0.8, alpha=0.6, label='cur')
-    ax2.set_title('② 世界系磁场方向残差（物理不变量）', fontsize=9)
+    if cursors:
+        for cur in cursors:
+            cur.set_xdata([D['t'][k], D['t'][k]])
+    ax2.set_title('② 世界系磁场方向残差（物理不变量，对数轴）', fontsize=9)
     ax1.set_title('③ 角速率与削顶', fontsize=9)
     ax4.set_title('④ 地磁施加的修正（yaw/tilt 分量）', fontsize=9)
 
@@ -165,20 +161,26 @@ def main():
     ax4b = ax4.twinx()
     ax4b.semilogy(D['t'], np.maximum(D['rs'], 1e-2), color='0.5', lw=0.8, label='mag_rs（倾斜降权）')
     ax4b.set_ylabel('mag_rs', color='0.4'); ax4b.legend(fontsize=8, loc='upper right')
+    cur2 = ax2.axvline(tlim[0], color='k', lw=0.8, alpha=0.6)
+    cur1 = ax1.axvline(tlim[0], color='k', lw=0.8, alpha=0.6)
+    cur4 = ax4.axvline(tlim[0], color='k', lw=0.8, alpha=0.6)
+    cursors = (cur2, cur1, cur4)
+    fig.tight_layout()
 
     def upd(i):
-        draw_frame(fig, (ax3, ax2, ax1, ax4), D, idx[i], tlim)
-        fig.tight_layout()
+        draw_frame(fig, (ax3, ax2, ax1, ax4), D, idx[i], cursors)
         return ()
 
     if a.preview:
         k = int(np.argmin(np.abs(D['t'] - (a.at if a.at is not None else D['t'][idx[len(idx) // 2]]))))
-        draw_frame(fig, (ax3, ax2, ax1, ax4), D, k, tlim)
-        fig.tight_layout(); fig.savefig(a.preview, dpi=110)
+        draw_frame(fig, (ax3, ax2, ax1, ax4), D, k, cursors)
+        fig.savefig(a.preview, dpi=110)
         print('预览帧 t=%.2f s -> %s' % (D['t'][k], a.preview))
         return 0
 
-    out = a.out or (os.path.splitext(a.log)[0] + '_anim.gif')
+    # 注意：matplotlib 写文件时会 Path(out).parent.resolve(strict=True)，在 subst/映射盘（如 R:）上
+    # 会抛 OSError(WinError 1)。所以默认写到**当前工作目录**，需要放 R: 就渲染完再拷过去。
+    out = a.out or (os.path.basename(os.path.splitext(a.log)[0]) + '_anim.gif')
     anim = FuncAnimation(fig, upd, frames=len(idx), interval=1000.0 / a.fps, blit=False)
     anim.save(out, writer='pillow', fps=a.fps)
     plt.close(fig)
