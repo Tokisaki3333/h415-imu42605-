@@ -153,7 +153,7 @@ def main():
     tune_ok = all(k in tune for k in ('#define V5F_EKF_MAG_MODE          1u',
                                       '#define V5F_EKF_MAG_VEC_SIG_DEG   0.9f',
                                       '#define V5F_EKF_MAG_VEC_K_MAX     0.10f',
-                                      '#define V5F_FW_VER        103u'))
+                                      '#define V5F_FW_VER        104u'))
     print()
     print('B. C 结构检查')
     for n, v in (('去注释后括号平衡', b_ok), ('新变量已声明', decl_ok),

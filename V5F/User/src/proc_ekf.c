@@ -637,10 +637,15 @@ static void ekf_m3_baro(const volatile v5f_proc_gate_t *gate)
 /* M7 磁偏航（1 维，只挂第 8 项） */
 static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gate)
 {
-    float R[1], r[1], rg[2], Rt[3][3], Bn[3], mf[3], ab[3], mh[3], xv[3], crs3[3];
+    float rg[2], Rt[3][3], Bn[3], mf[3], ab[3], mh[3], xv[3], crs3[3];
     float fp[3], mh2[3], crs4[3], b0v[3], up_nav[3];
+#if (V5F_EKF_MAG_MODE != 0u)
     float bb[3], e1[3], e2[3], r2v[2], RRv[4];   /* VER=103 真牵引用 */
-    float fhb2, ci, b0x, b0y, b0z, sig2;
+#endif
+    float fhb2, ci, b0x, b0y, b0z;
+#if (V5F_EKF_MAG_MODE == 0u)
+    float R[1], r[1];              /* 只有旧标量模式用（模式 1 走向量量测）*/
+#endif
     float dpar, mhn, xvn, thm, thp, psih, dp2, mh2n, an2, cc;
     uint8_t st;
     uint32_t i;
@@ -688,6 +693,9 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     b0z = -V5F_EKF_DIP_TAN * ci;
     /* ★VER=84 R 含倾角不确定度项：磁新息对倾角误差的灵敏度 =
      * tan(dip) = V5F_EKF_DIP_TAN = 2.08，所以 sigma_tilt 会以 2.08 倍混进偏航新息。 */
+#if (V5F_EKF_MAG_MODE == 0u)
+    /* 旧 R 模型 R^2 = R0^2 + (tan(dip)*sigma_tilt)^2 —— 只有标量模式用；
+     * 模式 1 的真牵引用物理 sigma（V5F_EKF_MAG_VEC_SIG_DEG），不需要这个放大。 */
     s_tilt_sig_deg = sqrtf(s_P[6][6] + s_P[7][7]) * RAD2DEG;
     {
         float mr = V5F_EKF_MAG_R_DEG * DEG2RAD;      /* ★VER=87 总不确定度 */
@@ -698,9 +706,10 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         dl = V5F_EKF_DIP_TAN * (stc * DEG2RAD);
         float ra = rb + dl * dl;
         if (ra > rb * V5F_EKF_MAG_RSCALE_MAX) ra = rb * V5F_EKF_MAG_RSCALE_MAX;
-        sig2 = ra;
+        R[0] = ra;
         s_mag_rs = ra / rb;
     }
+#endif
 
     /* ---- 几何诊断（导航系水平二维残差；定义不变，供日志与整角对齐用） ---- */
     q_to_R(&s_x[IX_Q], Rt);
@@ -779,8 +788,11 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     crs4[2] = ab[0]*mh2[1] - ab[1]*mh2[0];
     thp = atan2f((crs4[0]*xv[0] + crs4[1]*xv[1] + crs4[2]*xv[2]) / (mh2n*xvn),
                  (mh2[0]*xv[0] + mh2[1]*xv[1] + mh2[2]*xv[2]) / (mh2n*xvn));
+#if (V5F_EKF_MAG_MODE == 0u)
+    /* 旧标量新息：只有模式 0 用；模式 1 的 s_mag_r 在下面按向量残差算 */
     r[0] = wrap_pi(thm - thp);                  /* 参考轴 xv 在两式里相消 */
     s_mag_r = fabsf(r[0]) * RAD2DEG;
+#endif
     s_mag_cmp_thm = thm * RAD2DEG;
     s_mag_cmp_thp = thp * RAD2DEG;
     {
@@ -841,7 +853,7 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     /* ---- VER=103 真牵引：机体系残差（不做任何姿态投影）-------------------- */
 #if (V5F_EKF_MAG_MODE != 0u)
     {
-        float n1, c1, sg2, pr0, pr1, pr2, Sx[3][3];
+        float n1, c1, sg2, Sx[3][3];
         uint32_t ax2;
         bb[0] = Rt[0][0]*b0x + Rt[1][0]*b0y + Rt[2][0]*b0z;
         bb[1] = Rt[0][1]*b0x + Rt[1][1]*b0y + Rt[2][1]*b0z;
@@ -853,7 +865,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         /* r = P_⊥ m^ = m^ - (m^·b^)b^  （等于 (I - b^b^T)(m^ - b^)）
          * 注意不能写成 (m^ - b^) - (m^·b^)b^：那多减了一个 b^，
          * 虽然再投影到 ⊥b^ 后数值被消掉，但 H 就不再是它的 Jacobian（不自洽）。 */
-        pr0 = mf[0] - c1*bb[0]; pr1 = mf[1] - c1*bb[1]; pr2 = mf[2] - c1*bb[2];
         /* ⊥b^ 平面正交基：e1 = normalize(z^ x b^)，e2 = b^ x e1 */
         e1[0] = -bb[1]; e1[1] = bb[0]; e1[2] = 0.0f;
         n1 = sqrtf(e1[0]*e1[0] + e1[1]*e1[1]);
@@ -869,7 +880,8 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         /* 上报**夹角** theta = angle(m^, b^_b) = atan2(|r|, m^·b^)，
          * 不能直接报 |r|（那是 sin(theta)，90 度时会显示成 57.3 度）。 */
         s_mag_r = atan2f(sqrtf(r2v[0]*r2v[0] + r2v[1]*r2v[1]), c1) * RAD2DEG;
-        s_mag_rx = pr0; s_mag_ry = pr1;
+        s_mag_rx = r2v[0] * RAD2DEG;   /* VER=104 诊断列改报 ⊥b^ 两维新息(度) */
+        s_mag_ry = r2v[1] * RAD2DEG;
         /* H 行 = -e_i^T [b^]x（作用在旋转矢量 dx[6..8] 上） */
         H_zero(2u);
         Sx[0][0] = 0.0f;   Sx[0][1] = -bb[2]; Sx[0][2] =  bb[1];
@@ -912,8 +924,7 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
 
 #if (V5F_EKF_MAG_MODE == 0u)
     /* ---------------- 模式 0：旧标量牵引（保留回退） ---------------- */
-    R[0] = sig2;
-    if (s_mag_r < V5F_EKF_MAG_DEAD_DEG) return;
+    if (s_mag_r < V5F_EKF_MAG_DEAD_DEG) return;   /* R[0] 已在上面 R 模型块里设好 */
     st = ekf_update(R, 1u, r, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
                     0x0100u, V5F_EKF_MAG_K_MAX);
     if (st == 0u) {
