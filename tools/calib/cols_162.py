@@ -136,12 +136,12 @@ def load_frames(path, max_frames=None):
     frames = []
     i = 0
     n = len(raw)
-    while i + 4 + pl + 2 <= n:
+    while i + 4 + pl <= n:
         if raw[i] == 0xA5 and raw[i + 1] == 0x5A:
             ln = raw[i + 2] | (raw[i + 3] << 8)
             if ln == pl:
                 end = i + 4 + pl
-                if raw[end] == 0x5A and raw[end + 1] == 0xA5:
+                if end + 2 <= n and raw[end] == 0x5A and raw[end + 1] == 0xA5:
                     frames.append(np.frombuffer(raw[i + 4:end], dtype='<f4'))
                     i = end + 2
                     continue
