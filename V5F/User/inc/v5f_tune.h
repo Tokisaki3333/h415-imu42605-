@@ -111,7 +111,7 @@
  * 用于把 EKF 里的陀螺积分快照回溯到真正的 DRDY 时刻，钳 5 ms 防异常大值。 */
 #define V5F_MAG_RDAGE_MAX_TICK    500000ULL
 
-#define V5F_CDC_QUAT_ONLY 1u   /* VER=108 输出模式（验收）:
+#define V5F_CDC_QUAT_ONLY 0u   /* VER=108 输出模式（验收）:
                                  *   1u = 验收: CDC(EP2) 只报 **EKF 四元数**
                                  *        (JustFloat: 4 x float32 + 00 00 80 7F = 20 B/帧)
                                  *        * 该分支在 justfloat_report() 开头就 return，

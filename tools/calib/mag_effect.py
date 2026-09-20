@@ -15,6 +15,11 @@ r"""地磁修正作用分析：是否**均匀分布在整个运动过程**、是
 import sys
 import numpy as np
 
+try:                      # GBK 控制台编不出组合符(m-hat)等字符
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 sys.path.insert(0, r'C:\Users\33\Documents\v2\h415-imu42605-\tools\calib')
 import cols_162 as C
 import mag360_cal as M

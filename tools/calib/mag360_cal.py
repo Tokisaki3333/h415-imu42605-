@@ -23,6 +23,11 @@ import sys
 
 import numpy as np
 
+try:                      # GBK 控制台编不出组合符(m-hat)等字符
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cols_162 as C   # noqa: E402
 
