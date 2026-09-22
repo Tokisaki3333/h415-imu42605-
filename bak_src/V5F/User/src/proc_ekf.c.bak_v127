@@ -1870,7 +1870,7 @@ uint8_t v5f_proc_ekf_gate(volatile v5f_hold_t *h, volatile v5f_proc_gate_t *gate
             s_md_n++;
             if (s_md_n >= (uint16_t)V5F_MAG_DIST_WIN_N) {
                 float rate = fabsf(s_md_psim - s_md_psig) / V5F_MAG_DIST_WIN_S * RAD2DEG;
-                float thr = V5F_MAG_DIST_THR_DPS + V5F_MAG_DIST_KS * wm;   /* VER=127: KS=0 -> ¹Ì¶¨ 20 dps */
+                float thr = V5F_MAG_DIST_THR_DPS + V5F_MAG_DIST_KS * wm;
                 if (!clipped && wm < V5F_MAG_DIST_WMAX_DPS && rate > thr) {
                     s_md_hold = (uint32_t)V5F_MAG_DIST_HOLD_N;
                 }
