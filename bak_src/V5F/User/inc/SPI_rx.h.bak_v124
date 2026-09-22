@@ -258,10 +258,6 @@ typedef struct {
     volatile uint8_t aligned;         /* 1 = 已完成重力 + 磁力计对齐 */
     volatile uint8_t origin_ok;       /* 1 = ENU 原点已建立 */
     volatile uint8_t valid;           /* 1 = 本帧状态有效 */
-    float            mag_mode;        /* VER=124 本观测帧实际生效的地磁入口
-                                       *   0 = 未修正(门控/采样去重/剔除/更新失败)
-                                       *   1 = 入口A 重力法平面投影(只修正姿态角)
-                                       *   2 = 入口B 矢量方式(e1 偏航+e2 倾斜) */
     uint8_t          _rsv_ekf[1];
 } v5f_ekf_t;
 

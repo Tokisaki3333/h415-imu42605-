@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""常规工况验收: CDC 四元数流(每行一帧 24B = q[4] + 地磁入口 + 帧尾 00 00 80 7F)
+"""常规工况验收: VER=100 CDC 四元数流(每行一帧 20B)
    ① 格式/完整/模长/速率 ② 有效姿态更新率与每次步长 ③ 角速率剖面(判工况)
    ④ 静止段(窗速率<2dps, >=1s): 偏航/倾角变化与漂移率 ⑤ 起止姿态差"""
 import numpy as np, re, sys, math
 np.seterr(all='ignore'); sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 P = sys.argv[1] if len(sys.argv) > 1 else r'serial_runtime_20260916_061843_305_export.txt'
-pat = re.compile(r'^\[(\d\d):(\d\d):(\d\d\.\d\d\d)\] \[RX\] ((?:[0-9A-Fa-f]{2} ){23}[0-9A-Fa-f]{2})\s*$')
-ts, qs, mds, nline, bad = [], [], [], 0, 0
+pat = re.compile(r'^\[(\d\d):(\d\d):(\d\d\.\d\d\d)\] \[RX\] ((?:[0-9A-Fa-f]{2} ){19}[0-9A-Fa-f]{2})\s*$')
+ts, qs, nline, bad = [], [], 0, 0
 for L in open(P, 'rb').read().decode('ascii', 'replace').split('\n'):
     if not L.startswith('['): continue
     nline += 1
@@ -15,8 +15,7 @@ for L in open(P, 'rb').read().decode('ascii', 'replace').split('\n'):
     b = bytes.fromhex(m.group(4).replace(' ', ''))
     ts.append(int(m.group(1))*3600+int(m.group(2))*60+float(m.group(3)))
     qs.append(np.frombuffer(b[:16], dtype='<f4'))
-    mds.append(float(np.frombuffer(b[16:20], dtype='<f4')[0]))   # VER=124 地磁入口
-    if b[20:24] != b'\x00\x00\x80\x7f': bad += 1
+    if b[16:20] != b'\x00\x00\x80\x7f': bad += 1
 ts = np.array(ts); Q = np.array(qs, dtype=np.float64); N = len(Q)
 nn = np.linalg.norm(Q, axis=1)
 print('%s' % P.split('\\')[-1])

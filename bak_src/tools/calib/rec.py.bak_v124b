@@ -164,7 +164,7 @@ def main():
                 time.sleep(0.0005)
             if not warn6 and p.n_ok == 0 and el > 6.0:
                 warn6 = True
-                print('!! 6 s 没有 A5 5A 帧：固件可能是验收模式(24B JustFloat)先跑 cap.py，'
+                print('!! 6 s 没有 A5 5A 帧：固件可能是验收模式(20B JustFloat)先跑 cap.py，'
                       '或端口选错(用 --port)')
             if el - last >= 10.0:
                 last = el

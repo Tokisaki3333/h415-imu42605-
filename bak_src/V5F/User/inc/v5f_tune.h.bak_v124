@@ -135,7 +135,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        124u
+#define V5F_FW_VER        123u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -153,7 +153,7 @@
 
 #define V5F_CDC_QUAT_ONLY 1u   /* VER=108 输出模式（验收）:
                                  *   1u = 验收: CDC(EP2) 只报 **EKF 四元数**
-                                 *        (JustFloat: 5 x float32 + 00 00 80 7F = 24 B/帧)
+                                 *        (JustFloat: 4 x float32 + 00 00 80 7F = 20 B/帧)
                                  *        * 该分支在 justfloat_report() 开头就 return，
                                  *          不受 V5F_CDC_DEBUG_DIV 抽帧，速率 = IMU 中断率(~8 kHz)
                                  *   0u = 调试: 旧 162 通道 JustFloat 帧(654B/帧, 抽帧后 337 Hz) */

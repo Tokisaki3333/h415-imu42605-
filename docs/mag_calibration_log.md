@@ -496,3 +496,58 @@ Q_yaw  = min( ARW² + (KS_YAW·|w|·DEG2RAD)² , Q_MAX )
   + `Copy-Item bak_src\V5F\User\src\SPI_rx.c.bak_v122 V5F\User\src\SPI_rx.c -Force`
 - 回退 VER=118：见 §8.6.1 三条（`.bak_v118_LASTGOOD`）。
 - 备份：本次已存 `v5f_tune.h / proc_ekf.c / SPI_rx.c` 的 `.bak_v123`（= VER=122 内容）。
+
+---
+
+## 8.9 VER=124：**验收帧**新增一路 float = 当前地磁入口（0/1/2）
+
+用户要求："在验收模式上报加一个 float 位表示当前地磁模式"。
+⚠️ **先记一次改错**：我第一版把这一列加到了**调试帧**（`JF_CH_NUM 162→163`）—— 那是错的。
+调试帧本来工作正常，**一个字节都不该动**；要动的是 **验收帧**（`V5F_CDC_QUAT_ONLY != 0` 那条分支：
+CDC EP2 只发 EKF 四元数的 20 B JustFloat）。该版本已完整回退（脚本 `patch_v124_accept_magmode.py`
+第一步就从 `.bak_v124` 把 `SPI_rx.c / cols_162.py / 6 个 acceptance 脚本` 恢复回 VER=123）。
+
+### 8.9.1 验收帧格式（20 B -> 24 B）
+
+| | 原 | 现 |
+|---|---|---|
+| 载荷 | `q[4]`（EKF 四元数，4×float32 小端） | `q[4]` + **`mag_mode`（1×float32）** |
+| 帧尾 | `00 00 80 7F` @ 16..19 | `00 00 80 7F` @ **20..23** |
+| 长度 | 20 B/帧（每 IMU 帧一帧，8 kHz） | **24 B/帧** |
+
+`mag_mode` 取值：**0** = 本帧没有地磁修正（门控 / IST 采样去重 / 剔除 / 更新失败）；
+**1** = 入口 A 重力法平面投影（只修正姿态角）；**2** = 入口 B 矢量方式（e1 偏航 + e2 倾斜）。
+它放在**帧尾之前**（JustFloat 要求 `00 00 80 7F` 是最后 4 字节）⇒ 读取端把"通道数"从 4 改成 5
+（含帧尾的记录 = 6 个 float = 24 B）。
+
+**调试帧完全没动**：`JF_CH_NUM` 仍是 **162u**、帧长仍 654 B、`fw_tag` 仍是 `(124<<16)|(162<<8)|7`；
+`V5F_CDC_QUAT_ONLY` 置 0u 时照旧工作 ✓（`tools/calib/cols_162.py` 自检 rc=0：162 列 / 120 组 / 锚点全中）。
+
+### 8.9.2 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `v5f_tune.h` | `V5F_FW_VER → 124u`；`V5F_CDC_QUAT_ONLY` 注释 20 B → **24 B**（第 5 路 = 地磁入口） |
+| `SPI_rx.c` | 验收分支：`qbuf[20] → qbuf[24]`；`mm = g_v5f_hold.ekf.mag_mode; memcpy(qbuf+16,&mm,4)`；帧尾 16..19 → 20..23；`hid_up_enqueue(qbuf, 24u)`。**调试帧分支一行未改** |
+| `SPI_rx.h` | `v5f_ekf_t` 末尾加 `float mag_mode;`（结构体只在 V5F 内部用，V3F 不引用） |
+| `proc_ekf.c` | `static float s_mag_mode;`；每观测帧随 `s_mag_used` 清零；哪个入口返回 0 就置 1/2；`ekf_publish` 里 `h->ekf.mag_mode = s_mag_mode;` |
+| `tools/acceptance/_accept3.py` | 行正则 20 B → **24 B**（`{19}`→`{23}`）、帧尾查 `b[20:24]`、并把第 5 路收进 `mds[]` |
+| `tools/calib/zerodrift.py` | 20 → 24 字节、帧尾 `[16:20]` → `[20:24]` |
+| `tools/calib/scale_sim.py` | `reshape(-1,5)` → `reshape(-1,6)`（4 分量 + 1 地磁 + 尾） |
+| `tools/calib/rec.py` | 提示文本 20B → 24B |
+| `tools/calib/cols_162.py` | 列名表不动（调试帧没变），只把 `VER_EXPECT` 107 → 124 |
+| `tools/calib/jf_load.py` | **无需改**：它按十六进制 token 数自动识别通道数（现在会报 5 通道） |
+| `tools/calib/bias_uncertainty.py` | 不动：那是另一种 9 通道 40 B 帧，不是验收帧 |
+
+### 8.9.3 验收（烧录 VER=124 后）
+
+| # | 项 | 期望 |
+|---|---|---|
+| 1 | 验收流格式 | 每帧 **24 B**，第 5 个 float ∈ {0,1,2}，末 4 字节恒为 `00 00 80 7F`；`_accept3.py` 的"坏帧"计数应≈0 |
+| 2 | 静置 | 第 5 路 = **1**（投影入口，只修正姿态角） |
+| 3 | 持续机动 | 第 761 列（调试帧的重力矢量误差估计）越 2.0 后第 5 路变 **2**，回落 0 后回 **1** |
+| 4 | 地磁门关/采样未更新 | 第 5 路 = **0** ⇒ 直接证明"这一帧地磁没动姿态" |
+| 5 | 调试帧 | 若把 `V5F_CDC_QUAT_ONLY` 置 0u，仍是 162 通道 654 B、`fw_tag` 通道位 162，行为与 VER=123 完全一致 |
+
+- 回退：验收帧 `Copy-Item bak_src\V5F\User\src\SPI_rx.c.bak_v124b V5F\User\src\SPI_rx.c -Force`
+  （`.bak_v124b` = 本次改验收帧之前的 VER=123 状态）；整套回 VER=123 见 §8.8.6。

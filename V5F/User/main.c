@@ -96,10 +96,10 @@ int main(void)
             {
                 uint8_t mg = g_v5f_hold.ekf.mag_gate;
                 s_oled_last = ov;
-                oled_printf(0,  0, "MAG %s ok%d yaw%d",      /* EKF 口径: 样本有效性 + 牵引门 */
+                oled_printf(0,  0, "MAG %3s yaw%d",      /* EKF 口径: 样本有效性 + 牵引门 */
                             (uint8_t)(g_v5f_hold.mag.ok && g_v5f_hold.ekf.mag_gate) ? "OK "
-                            : ((g_v5f_hold.mag.ok != 0u) ? "GATE" : "BAD "),
-                            (int)g_v5f_hold.mag.ok, (int)g_v5f_hold.ekf.mag_gate);
+                            : ((g_v5f_hold.mag.ok != 0u) ? "GAT" : "BAD"),
+                            (int)g_v5f_hold.ekf.mag_gate);
                 oled_printf(0, 16, "gate%d used%d hold%d",     /* 牵引门 / 是否用了 / 是否暂停 */
                             (int)mg, (int)g_v5f_hold.ekf.mag_used, (int)g_v5f_hold.ekf.mag_hold);
                 oled_printf(0, 32, "n%6.3f h%5.3f a%5.1f",     /* 归一化模长 / 水平占比 / 加计夹角 */
