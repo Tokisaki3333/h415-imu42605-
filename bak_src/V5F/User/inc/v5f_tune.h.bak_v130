@@ -135,7 +135,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        130u
+#define V5F_FW_VER        129u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -815,16 +815,6 @@
 #define V5F_MAG_DIST_THR_DPS   20.0f
 #define V5F_MAG_DIST_KS        0.0f     /* VER=127: 改为"只在静止判"，不再按转速放宽（保留常量便于回退） */
 #define V5F_MAG_DIST_WMAX_DPS  5.0f     /* VER=127: 只在接近静止时判定 */
-/* VER=130 静止态地磁牵引放开到 tau≈1.5 s（用户：一致性门良好，静止后要快速消掉
- * 运动中积攒的偏航残差）。机制：静止（|w| < V5F_MAG_DIST_WMAX_DPS 且磁模幅度门
- * 通过）时把偏航 P88 地板抬到 P_min = R_yaw*K/(1-K)，K = V5F_MAG_EPOCH_DT_S/tau，
- * 于是 K = P/(P+R) = K 恒成立 -> tau 精确 1.5 s（与 R 无关）；运动时地板回到
- * V5F_EKF_YAW_P_MIN（纯数值下限），牵引由自然增益决定（|w| 大时 tau≈0.95 s）。
- * 必要性：只压 R 无法把 K 从 3.7e-4 抬到 3.5e-3；抬 P 同时把 NIS 拉低，避免运动
- * 残差被 chi2(V5F_EKF_NIS_MAX_MAG=16.27) 判成野值。副作用：静止 sigma_yaw 由
- * 0.04 deg -> sqrt(P_min)≈0.2 deg（诚实不确定度）。 */
-#define V5F_MAG_STATIC_TAU_S     1.5f
-#define V5F_MAG_STATIC_TAU_EN    1u
 #define V5F_MAG_CLIP_LSB       32700
 /* VER=129：**删除** VER=125 的常数牵引速度上限，回到"降低前"的自然 EKF 增益
  * K = P88/(P88+R)（用户口径：牵引应是旧版本的快速牵引）。VER=125 曾用

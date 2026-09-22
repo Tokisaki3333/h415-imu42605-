@@ -137,10 +137,6 @@ static float    s_tilt_bad_s;         /* ★VER=84 倾角参考连续失效时长(s) */
 static float    s_tilt_inv_ms;        /* ★VER=84 上报：倾角参考失效时长(ms) */
 static uint8_t  s_grav_ok;            /* ★VER=84 上报：重力观测门状态 */
 static float    s_mag_rs;
-/* VER=130 静止态偏航牵引：s_yaw_p_min 为**运行时** P88 地板（默认纯数值下限），
- * s_yaw_fast 为"本帧静止且磁可信"标志（在 ekf_m7_mag 开头判定）。 */
-static float    s_yaw_p_min = V5F_EKF_YAW_P_MIN;
-static uint8_t  s_yaw_fast;
 /* VER=126 地磁失效门（陀螺一致性）状态 */
 static float    s_md_psi, s_md_psim, s_md_psig;
 static uint16_t s_md_n;
@@ -664,19 +660,6 @@ static void ekf_m3_baro(const volatile v5f_proc_gate_t *gate)
  *   注入掩码 0x0100：只开偏航状态，roll/pitch 的 K 被清零 = 只修正姿态角
  *   R = sigma_h^2 + (tanI*sigma_tilt)^2：倾角不确定度会污染平面内航向；
  *     重力有效时 sigma_tilt 极小，R 自动退化到 sigma_h^2。 */
-/* VER=130 静止态牵引速度：由本帧实际 R_yaw 反解 P88 地板，使闭环 K = dt/tau 恒成立。
- * 只在静止（s_yaw_fast）时生效；否则回到 V5F_EKF_YAW_P_MIN（= VER=129 行为）。 */
-static void ekf_yaw_pmin_static(float r_yaw)
-{
-    float k = V5F_MAG_EPOCH_DT_S / V5F_MAG_STATIC_TAU_S;
-    if (V5F_MAG_STATIC_TAU_EN != 0u && s_yaw_fast != 0u && k > 0.0f && k < 1.0f) {
-        float pf = r_yaw * (k / (1.0f - k));
-        s_yaw_p_min = (pf > V5F_EKF_YAW_P_MIN) ? pf : V5F_EKF_YAW_P_MIN;
-    } else {
-        s_yaw_p_min = V5F_EKF_YAW_P_MIN;
-    }
-}
-
 static uint8_t ekf_mag_entry_plane(float thm, float thp)
 {
     float R1[1], r1[1], sig_h, sig_t, dl;
@@ -687,7 +670,6 @@ static uint8_t ekf_mag_entry_plane(float thm, float thp)
     if (sig_t > V5F_EKF_MAG_PLANE_TILT_CAP_DEG) sig_t = V5F_EKF_MAG_PLANE_TILT_CAP_DEG;
     dl = V5F_EKF_DIP_TAN * (sig_t * DEG2RAD);
     R1[0] = (sig_h * DEG2RAD) * (sig_h * DEG2RAD) + dl * dl;
-    ekf_yaw_pmin_static(R1[0]);   /* VER=130 */
 
     H_zero(1u);
     s_H[0][8] = 1.0f;
@@ -698,7 +680,6 @@ static uint8_t ekf_mag_entry_plane(float thm, float thp)
 /* ---- 入口 B：矢量方式（VER=103 起的现实现，一字未改）：e1 偏航 + e2 倾斜 ---------- */
 static uint8_t ekf_mag_entry_vec(const float *r2v, const float *RRv)
 {
-    ekf_yaw_pmin_static(RRv[0]);   /* VER=130 */
     return ekf_update(RRv, 2u, r2v, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
                       0x01C0u, V5F_EKF_MAG_VEC_K_MAX);
 }
@@ -719,14 +700,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
      *   0.5 s 累积 60.9 度)，据此曾误判"磁在剧烈段注入 143 度/s"。
      *   清零放在入口门之前：门关时"本周期磁修正量"本来就是 0，这是事实不是补丁。 */
     s_mag_dqx = 0.0f; s_mag_dqy = 0.0f; s_mag_dqz = 0.0f;
-    /* VER=130 静止态牵引判定：默认关闭（含门关时的早退路径） */
-    s_yaw_p_min = V5F_EKF_YAW_P_MIN;
-    {
-        float wm = sqrtf(h->imu.gyro_dps[0] * h->imu.gyro_dps[0]
-                       + h->imu.gyro_dps[1] * h->imu.gyro_dps[1]
-                       + h->imu.gyro_dps[2] * h->imu.gyro_dps[2]);
-        s_yaw_fast = (uint8_t)((wm < V5F_MAG_DIST_WMAX_DPS) && (s_mn_ok != 0u));
-    }
     if (!V5F_EKF_YAW_OBS_EN || !gate->ekf_mag_yaw) return;
     s_mag_hold = 0u;                    /* ★VER=84 */
     for (i = 0u; i < 3u; i++) mf[i] = h->mag.f[i];
@@ -1261,7 +1234,7 @@ static void ekf_finalize(void)
              * 是指数塌陷，实测会被削到 1e-12 使偏航增益归零、环路彻底失去力气
              * （VER=74 录制：静置中残差从 21 度涨到 49 度，P 养回来才拉回）。
              * 下限取磁力计自身测量噪声的平方，保证 K 恒在 k_cap 上限。 */
-            if (i == 8u && j == 8u && a < s_yaw_p_min) a = s_yaw_p_min;   /* VER=130 */
+            if (i == 8u && j == 8u && a < V5F_EKF_YAW_P_MIN) a = V5F_EKF_YAW_P_MIN;
             s_Pn[i][j] = a;
             s_Pn[j][i] = a;
         }
@@ -1474,8 +1447,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             s_grav_err = 0u; s_ff_n = 0u; s_ff_ok = 0u; s_ff_t = s_t_run;   /* VER=123 切换判据复位 */
             s_mag_anchor = 0u;
             s_boot_t = 0.0f;   /* VER=126: 磁锚定窗从**对齐时刻**起算（原来从上电起算，对齐晚于 3 s 就永远不锚定 -> 上电那次快速牵引丢失） */
-            s_mag_dist = 0u; s_md_hold = 0u; s_md_n = 0u;
-            s_yaw_p_min = V5F_EKF_YAW_P_MIN; s_yaw_fast = 0u;   /* VER=130 */ s_md_psim = 0.0f; s_md_psig = 0.0f;   /* ★VER=51 重新对齐后允许再做一次快速偏航对齐 */
+            s_mag_dist = 0u; s_md_hold = 0u; s_md_n = 0u; s_md_psim = 0.0f; s_md_psig = 0.0f;   /* ★VER=51 重新对齐后允许再做一次快速偏航对齐 */
             for (i = 0u; i < 5u; i++) { s_nis[i] = 0.0f; s_rej[i] = 0u; }
             s_gate_bits = 0u;
             s_sig[0] = V5F_EKF_P0_YAW_RAD * RAD2DEG;
