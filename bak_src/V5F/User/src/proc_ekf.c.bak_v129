@@ -142,6 +142,7 @@ static float    s_md_psi, s_md_psim, s_md_psig;
 static uint16_t s_md_n;
 static uint32_t s_md_hold;
 static uint8_t  s_mag_dist;
+static float    s_mag_ryaw_min;        /* VER=125 偏航 R 地板（牵引速度上限用）*/
 static float    s_mag_mode;            /* VER=124 上报：本观测帧生效的地磁入口 0/1/2 */             /* ★VER=84 上报：磁 R 放大倍数 */
 static uint8_t  s_mag_hold;           /* ★VER=84 上报：磁因倾角失效被暂停 */         /* ★VER=83 上报：磁数据到使用时刻的年龄 (ms) */
 /* VER=123 地磁两入口的切换判据：重力矢量（倾角）误差估计，u32 定点，单位 1e-6 deg */
@@ -670,6 +671,8 @@ static uint8_t ekf_mag_entry_plane(float thm, float thp)
     if (sig_t > V5F_EKF_MAG_PLANE_TILT_CAP_DEG) sig_t = V5F_EKF_MAG_PLANE_TILT_CAP_DEG;
     dl = V5F_EKF_DIP_TAN * (sig_t * DEG2RAD);
     R1[0] = (sig_h * DEG2RAD) * (sig_h * DEG2RAD) + dl * dl;
+    /* VER=125 牵引速度上限：抬 R 使 K <= K_max（地板由 ekf_m7_mag 每次算） */
+    if (R1[0] < s_mag_ryaw_min) R1[0] = s_mag_ryaw_min;
 
     H_zero(1u);
     s_H[0][8] = 1.0f;
@@ -985,6 +988,19 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
      *                            只修正姿态角，roll/pitch 完全不参与）
      * s_grav_err >  THR       ：重力长期没牵引、倾角只能靠陀螺 -> 入口 B（矢量方式）
      * 阈值比较用微度整数；不加回差（判据不含 EKF 的 P 反馈，不存在极限环）。 */
+    /* ---- VER=125 磁牵引速度上限：K = P/(P+R) <= K_max = dt_mag/tau_design -------
+     * 抬 R = 声明地磁更吵（标准 EKF 限增益），保证闭环 tau 恒 >= V5F_MAG_YAW_TAU_MIN_S，
+     * 与 P88 记账是否精确无关：R_min = P88*(1/K_max - 1)。两个入口共用同一地板。 */
+    {
+        float k_max = V5F_MAG_EPOCH_DT_S / V5F_MAG_YAW_TAU_MIN_S;
+        if (k_max < 1.0f && k_max > 1.0e-9f) {
+            float rmin = s_P[8][8] * (1.0f / k_max - 1.0f);
+            s_mag_ryaw_min = rmin;
+            if (RRv[0] < rmin) RRv[0] = rmin;      /* 入口 B 用 RRv[0] */
+        } else {
+            s_mag_ryaw_min = 0.0f;
+        }
+    }
     if (s_grav_err > (uint32_t)(V5F_EKF_MAG_FF_THR_DEG * 1.0e6f)) {
         st = ekf_mag_entry_vec(r2v, RRv);      /* 入口 B：矢量方式 */
         if (st == 0u) s_mag_mode = 2.0f;       /* VER=124 上报：矢量入口 */

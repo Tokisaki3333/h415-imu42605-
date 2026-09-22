@@ -744,3 +744,45 @@ VER=126/127 的**运动一致性门**（`THR=20 dps`、仅在 `|w|<5 dps` 判定
 - 回滚：`python tools/ekf_session/rollback_v128.py`（从 `bak_src/…bak_v128` 还原 tune + proc_ekf）
 - 重放试验律：`python tools/ekf_session/patch_v128_yaw_speedup.py`
 - 分析：`python tools/ekf_session/magpull_extreme.py`
+
+---
+
+## 8.14 VER=129：牵引速度回滚到 VER=125 **降低之前**（删除常数 R 地板）
+
+用户口径：**"回滚牵引速度 …… 现在牵引还不是期望的那个旧版本的快速牵引，应该在上次降低前。"**
+
+"上次降低" = **VER=125 给偏航牵引加的常数 R 地板**：
+`K_max = V5F_MAG_EPOCH_DT_S / V5F_MAG_YAW_TAU_MIN_S`（常数 `3.32e-4`）、
+`R_yaw ≥ P88·(1/K_max − 1)`。它把增益钉在"静止工作点"，
+于是 **P88 变大时地磁也不能快拉**（上电初值、失效后重开、大机动后 Q 增长），
+只能按 15.85 s 慢爬 —— 实测极限段稳态滞后 28~40°（§8.13）。
+
+**本条只删三处**（= `git diff bak_v125` 中全部牵引相关差异，逐条核对）：
+1. `proc_ekf.c` 静态量 `s_mag_ryaw_min`；
+2. `ekf_mag_entry_plane()` 里的 `if (R1[0] < s_mag_ryaw_min) R1[0] = s_mag_ryaw_min;`（连同注释）；
+3. `ekf_m7_mag()` 中生成该地板的整个 `{ … }` 块（连同 VER=125 注释）；
+4. `v5f_tune.h` 的 `#define V5F_MAG_YAW_TAU_MIN_S`（删除；`V5F_MAG_EPOCH_DT_S` 保留作设计口径记录）。
+
+**一个字节都没动**：VER=126/127 运动一致性门（`THR=20 dps`、仅 `|w|<5 dps` 判定、`HOLD=0.5 s`、
+削顶护栏）、VER=123 双入口 + 重力失效累加器（`THR=2°`）、VER=122 的 Q_yaw 设计
+（`Q_YAW_ARW` + `KS_YAW·|w|`，`Q_YAW_MAX=7.14e-6`）、`V5F_EKF_MAG_VEC_K_MAX=0.10`、
+`V5F_MAG_ERR_LIM=0.10`、`V5F_EKF_YAW_P_MIN`（现 1e-12 与 v124 的 `(0.01°)²=3.05e-8`
+都远低于自然 `P88≈4.5e-7`，对牵引速度无影响，故不动）。
+
+回滚后牵引速度 = **自然 EKF 增益** `K = P88/(P88+R)`（单步 K 上限由 `MAG_VEC_K_MAX=0.10` 把关）：
+
+| 场景 | P88 | K | τ |
+|---|---|---|---|
+| 静止、P88 干净 | ≈4.5e-7 | ≈3.5e-4 | ≈15 s（与设计一致，**未变快**） |
+| 高转速（\ \|w\ \|≈2000 dps） | Q 增长（受 Q_MAX 限） | ≈5.5e-3 | ≈0.95 s |
+| P88 被抬高（上电 / 失效重开 / 大机动后） | 大 | 按 P/(P+R) 升到 ≤0.10 | **≥53 ms（快速牵引）** |
+
+这正是"旧版本的快速牵引"：旧版在同样场景下 `P88` 实际是 ~2e-3 量级，`K≈0.6`（被 0.10 夹住）
+→ 地磁一步就把偏航拽回去；VER=125 的地板把它压成 3.3e-4，才有了"牵引失效"。
+干扰防护由 **失效门**承担（这也是"不用回滚门控"的原因）：门关期间地磁完全不参与，
+门开后 P88 大 → 快速回中。
+
+`V5F_FW_VER = 129`；`V5F_CDC_QUAT_ONLY = 1u`（验收帧 5×f32，第 5 路 `mag_mode`）不变。
+
+- 重放：`python tools/ekf_session/patch_v129_pull_revert.py`
+- 回退：`bak_src\V5F\User\{inc\v5f_tune.h,src\proc_ekf.c}.bak_v129`（= VER=127）
