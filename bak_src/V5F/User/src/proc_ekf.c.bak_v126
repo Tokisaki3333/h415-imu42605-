@@ -137,11 +137,6 @@ static float    s_tilt_bad_s;         /* ★VER=84 倾角参考连续失效时长(s) */
 static float    s_tilt_inv_ms;        /* ★VER=84 上报：倾角参考失效时长(ms) */
 static uint8_t  s_grav_ok;            /* ★VER=84 上报：重力观测门状态 */
 static float    s_mag_rs;
-/* VER=126 地磁失效门（陀螺一致性）状态 */
-static float    s_md_psi, s_md_psim, s_md_psig;
-static uint16_t s_md_n;
-static uint32_t s_md_hold;
-static uint8_t  s_mag_dist;
 static float    s_mag_ryaw_min;        /* VER=125 偏航 R 地板（牵引速度上限用）*/
 static float    s_mag_mode;            /* VER=124 上报：本观测帧生效的地磁入口 0/1/2 */             /* ★VER=84 上报：磁 R 放大倍数 */
 static uint8_t  s_mag_hold;           /* ★VER=84 上报：磁因倾角失效被暂停 */         /* ★VER=83 上报：磁数据到使用时刻的年龄 (ms) */
@@ -1461,9 +1456,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             s_mag_ts_last = 0ULL;
             s_bh_idx = 0u; s_bh_fill = 0u;
             s_grav_err = 0u; s_ff_n = 0u; s_ff_ok = 0u; s_ff_t = s_t_run;   /* VER=123 切换判据复位 */
-            s_mag_anchor = 0u;
-            s_boot_t = 0.0f;   /* VER=126: 磁锚定窗从**对齐时刻**起算（原来从上电起算，对齐晚于 3 s 就永远不锚定 -> 上电那次快速牵引丢失） */
-            s_mag_dist = 0u; s_md_hold = 0u; s_md_n = 0u; s_md_psim = 0.0f; s_md_psig = 0.0f;   /* ★VER=51 重新对齐后允许再做一次快速偏航对齐 */
+            s_mag_anchor = 0u;   /* ★VER=51 重新对齐后允许再做一次快速偏航对齐 */
             for (i = 0u; i < 5u; i++) { s_nis[i] = 0.0f; s_rej[i] = 0u; }
             s_gate_bits = 0u;
             s_sig[0] = V5F_EKF_P0_YAW_RAD * RAD2DEG;
@@ -1852,34 +1845,7 @@ uint8_t v5f_proc_ekf_gate(volatile v5f_hold_t *h, volatile v5f_proc_gate_t *gate
         float dev, mnow = h->mag.mag_norm;
         dev = fabsf(mnow - 1.0f);
         s_mn_ok = (uint8_t)(dev < V5F_MAG_ERR_LIM);
-        /* ---- VER=126 地磁失效门（陀螺一致性）：外部磁干扰不许造成"假运动" -----------
-         * 实测：设备静止时磁航向路径能跑到 1683°/30 s（瞬时 p99 340 dps），地磁把这股
-         * 假运动当真实转动灌进姿态（EKF 偏航被拽 -62.5°）。判据见 v5f_tune.h。
-         * 门限按转速放宽 + 削顶/高转速护栏，全部依据 2026-09-22 的新录像。 */
-        {
-            float wm = sqrtf(h->imu.gyro_dps[0] * h->imu.gyro_dps[0]
-                           + h->imu.gyro_dps[1] * h->imu.gyro_dps[1]
-                           + h->imu.gyro_dps[2] * h->imu.gyro_dps[2]);
-            int32_t lx = h->imu.gyro_lsb[0], ly = h->imu.gyro_lsb[1], lz = h->imu.gyro_lsb[2];
-            uint8_t clipped = (uint8_t)((lx >= V5F_MAG_CLIP_LSB || lx <= -V5F_MAG_CLIP_LSB
-                                      || ly >= V5F_MAG_CLIP_LSB || ly <= -V5F_MAG_CLIP_LSB
-                                      || lz >= V5F_MAG_CLIP_LSB || lz <= -V5F_MAG_CLIP_LSB) ? 1u : 0u);
-            s_md_psim += wrap_pi((h->mag.psi_true_deg - s_md_psi) * DEG2RAD);
-            s_md_psig += h->imu.gyro_dps[2] * V5F_MAG_DIST_DT_S * DEG2RAD;
-            s_md_psi = h->mag.psi_true_deg;
-            s_md_n++;
-            if (s_md_n >= (uint16_t)V5F_MAG_DIST_WIN_N) {
-                float rate = fabsf(s_md_psim - s_md_psig) / V5F_MAG_DIST_WIN_S * RAD2DEG;
-                float thr = V5F_MAG_DIST_THR_DPS + V5F_MAG_DIST_KS * wm;
-                if (!clipped && wm < V5F_MAG_DIST_WMAX_DPS && rate > thr) {
-                    s_md_hold = (uint32_t)V5F_MAG_DIST_HOLD_N;
-                }
-                s_md_psim = 0.0f; s_md_psig = 0.0f; s_md_n = 0u;
-            }
-            if (s_md_hold > 0u) { s_md_hold--; s_mag_dist = 1u; } else { s_mag_dist = 0u; }
-        }
-        gate->ekf_mag_yaw = (uint8_t)(s_mn_ok && (V5F_EKF_YAW_OBS_EN != 0u)
-                                      && (s_mag_dist == 0u));   /* VER=126 加干扰门 */
+        gate->ekf_mag_yaw = (uint8_t)(s_mn_ok && (V5F_EKF_YAW_OBS_EN != 0u));
         s_mag_gate = gate->ekf_mag_yaw;      /* 上报：门到底开没开 */
     }
     /* ★ 无 GPS 时 speed 那一路被 flags 旁路掉，门退化成纯 is_static —— 而等效原理下

@@ -135,7 +135,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        126u
+#define V5F_FW_VER        125u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -151,7 +151,7 @@
  * 用于把 EKF 里的陀螺积分快照回溯到真正的 DRDY 时刻，钳 5 ms 防异常大值。 */
 #define V5F_MAG_RDAGE_MAX_TICK    500000ULL
 
-#define V5F_CDC_QUAT_ONLY 1u   /* VER=108 输出模式（验收）:
+#define V5F_CDC_QUAT_ONLY 0u   /* VER=108 输出模式（验收）:
                                  *   1u = 验收: CDC(EP2) 只报 **EKF 四元数**
                                  *        (JustFloat: 5 x float32 + 00 00 80 7F = 24 B/帧)
                                  *        * 该分支在 justfloat_report() 开头就 return，
@@ -795,22 +795,6 @@
  *  即比偏航弱 ~16 倍)，避免重力通道失效时由磁独自决定倾斜 -> 大残差。
  *  护栏：tilt 的 sigma 恒 >= 偏航的 sigma，且上限 TILT_SIG_MAX。 */
 #define V5F_EKF_MAG_VEC_SIG_TILT_DEG   3.0f
-/* VER=126 地磁失效门（陀螺一致性）参数 ----------------------------------------
- * 判据: 窗口 T 内 |Δpsi_mag - Δpsi_gyro|/T > THR_eff  => 地磁失效，保持 HOLD。
- * 门限按转速自适应: THR_eff = THR_DPS + KS*|w|（dps）—— 高转速下陀螺刻度/削顶、
- *   姿态滞后、磁采样延迟的误差都随 |w| 线性增长，用新录极限段（|w| p90 2010 dps）定 KS。
- * 窗口/保持按 8.0219 kHz 折算成帧数。
- * 护栏: 任一轴原始 LSB 触顶 |lsb| >= CLIP_LSB（削顶时陀螺不能当基准），
- *       或 |w| >= WMAX_DPS，该段不参与判定。
- * 实测（2026-09-22 新录像）: 受扰静止段干扰期内本门开度 0.00%；极限段门关 28%。 */
-#define V5F_MAG_DIST_DT_S      (1.0f / 8021.9f)
-#define V5F_MAG_DIST_WIN_N     2006u    /* 0.25 s */
-#define V5F_MAG_DIST_WIN_S     0.25f
-#define V5F_MAG_DIST_HOLD_N    24066u   /* 3 s */
-#define V5F_MAG_DIST_THR_DPS   20.0f
-#define V5F_MAG_DIST_KS        0.5f
-#define V5F_MAG_DIST_WMAX_DPS  100.0f
-#define V5F_MAG_CLIP_LSB       32700
 /* VER=125 地磁偏航"牵引速度"下限（闭环时间常数，s）。
  * 实测教训：刷进去的固件里 P[8][8] 卡在旧地板 (2 deg)^2 附近
  *   -> K = P/(P+R) ~ 0.63 -> 地磁按满权重硬拽 -> 30 s 被拽 -62 deg。
