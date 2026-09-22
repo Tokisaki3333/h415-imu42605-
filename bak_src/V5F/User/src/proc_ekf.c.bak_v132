@@ -47,15 +47,14 @@
 #include <math.h>     /* sqrtf / atan2f / sinf / cosf：-Ofast 下是单条指令，不引入 libm 调用 */
 
 /* ---------------- 状态索引 ---------------- */
-#define EKF_N        17u    /* VER=132: +地磁偏航偏置 */
+#define EKF_N        16u
 #define IX_P         0u
 #define IX_V         3u
 #define IX_Q         6u     /* 标称四元数占 4 个 */
 #define IX_BA        10u
 #define IX_BG        13u
 #define IX_BB        16u    /* 标称量第 17 个 */
-#define IX_MB       17u    /* VER=132 地磁偏航偏置（存储槽） */
-#define EKF_NX       18u    /* VER=132 */
+#define EKF_NX       17u
 /* ---- 误差状态索引 EI_*（**与存储索引 IX_* 不是同一套！**）-----------------
  * 存储 s_x[EKF_NX=17]：p(0-2) v(3-5) q(6-9,**四元数 4 维**) ba(10-12) bg(13-15) bb(16)
  * 误差 dx[EKF_N =16] ：p(0-2) v(3-5) dth(6-8,**旋转矢量 3 维**) ba(9-11) bg(12-14) bb(15)
@@ -68,7 +67,6 @@
 #define EI_BA        9u
 #define EI_BG       12u
 #define EI_BB       15u
-#define EI_MB       16u    /* VER=132 地磁偏航偏置（误差态） */
 
 #define DEG2RAD      0.017453292f
 #define RAD2DEG      57.2957795f
@@ -160,8 +158,6 @@ static float    s_md_psi, s_md_psim, s_md_psig;
 static uint16_t s_md_n;
 static uint32_t s_md_hold;
 static uint8_t  s_mag_dist;
-/* VER=132 供验收帧读取的地磁偏航偏置（deg）；用全局量避免改 v5f_ekf_t 布局 */
-volatile float   g_v5f_ekf_mb_deg;
 static float    s_mag_mode;            /* VER=124 上报：本观测帧生效的地磁入口 0/1/2 */             /* ★VER=84 上报：磁 R 放大倍数 */
 static uint8_t  s_mag_hold;           /* ★VER=84 上报：磁因倾角失效被暂停 */         /* ★VER=83 上报：磁数据到使用时刻的年龄 (ms) */
 /* VER=123 地磁两入口的切换判据：重力矢量（倾角）误差估计，u32 定点，单位 1e-6 deg */
@@ -306,9 +302,6 @@ static void ekf_inject(const float *dx)
         if (s_x[IX_BG + i] < -V5F_EKF_BG_LIM_RADS) s_x[IX_BG + i] = -V5F_EKF_BG_LIM_RADS;
     }
     s_x[IX_BB] += dx[EI_BB];
-    s_x[IX_MB] += dx[EI_MB];   /* VER=132 */
-    if (s_x[IX_MB] >  V5F_EKF_BM_LIM_DEG * DEG2RAD) s_x[IX_MB] =  V5F_EKF_BM_LIM_DEG * DEG2RAD;
-    if (s_x[IX_MB] < -V5F_EKF_BM_LIM_DEG * DEG2RAD) s_x[IX_MB] = -V5F_EKF_BM_LIM_DEG * DEG2RAD;
 
     dq[0] = 1.0f;
     dq[1] = 0.5f * dx[EI_Q + 0u];
@@ -703,7 +696,7 @@ static uint8_t ekf_mag_entry_plane(float thm, float thp)
     float R1[1], r1[1], sig_h, sig_t, dl;
 
     r1[0] = wrap_pi(thm - thp);
-    sig_h = V5F_EKF_MAG_WHITE_DEG;   /* VER=132: 只用白噪，偏置交给 b_m */
+    sig_h = V5F_EKF_MAG_VEC_SIG_DEG;
     sig_t = sqrtf(s_P[6][6] + s_P[7][7]) * RAD2DEG;
     if (sig_t > V5F_EKF_MAG_PLANE_TILT_CAP_DEG) sig_t = V5F_EKF_MAG_PLANE_TILT_CAP_DEG;
     dl = V5F_EKF_DIP_TAN * (sig_t * DEG2RAD);
@@ -712,7 +705,6 @@ static uint8_t ekf_mag_entry_plane(float thm, float thp)
 
     H_zero(1u);
     s_H[0][EI_Q + 2u] = 1.0f;
-    s_H[0][EI_MB] = 1.0f;   /* VER=132 偏置与偏航同系数 */
     return ekf_update(R1, 1u, r1, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
                       0x0100u, V5F_EKF_MAG_VEC_K_MAX);
 }
@@ -875,7 +867,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     /* H 只有偏航项 */
     H_zero(1u);
     s_H[0][EI_Q + 2u] = 1.0f;
-    s_H[0][EI_MB] = 1.0f;   /* VER=132 偏置与偏航同系数 */
 
     /* ★VER=62 开机窗内一次精确角整角修正（用几何残差 rg） */
     if (s_boot_t < V5F_EKF_MAG_ANCHOR_TS) {
@@ -983,7 +974,6 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
             s_H[0][IX_Q + ax2] = e1[0]*w0 + e1[1]*w1 + e1[2]*w2;
             s_H[1][IX_Q + ax2] = e2[0]*w0 + e2[1]*w1 + e2[2]*w2;
         }
-        s_H[0][EI_MB] = s_H[0][EI_Q + 2u];   /* VER=132 导航竖直轴偏置 */
         /* ---- 倾斜权的置信度：两者都用**重力**做竖直基准 ----
          * dip_m = 90 - angle(m^, gn)（与姿态无关、与夹具是否水平无关）；
          * ddip = |dip_m - 模型倾角|；环境畸变/模型失配越大 -> c 越小 -> 倾斜行 R 越大。
@@ -1264,7 +1254,6 @@ static void ekf_prop_row(void)
             else if (row >= EI_BA && row <= EI_BA + 2u) qd += V5F_EKF_SIG_BA_RW * V5F_EKF_SIG_BA_RW * dtq;
             else if (row >= EI_BG && row <= EI_BG + 2u) qd += V5F_EKF_SIG_BG_RW * V5F_EKF_SIG_BG_RW * dtq;
             else if (row == EI_BB)                      qd += V5F_EKF_SIG_BARO_RW * V5F_EKF_SIG_BARO_RW * dtq;
-            else if (row == EI_MB)                      qd += V5F_EKF_BM_Q_RADS2 * dtq;   /* VER=132 GM 过程 */
             /* ★VER=73 偏航方差下限：不加这一项，M7 的 k_cap 限幅更新会把
              * P[8][8] 指数抽干（削减 ∝ P）-> 偏航增益饿死 -> 环路失效。
              * 见 v5f_tune.h V5F_EKF_Q_YAW_MIN 的实测数据与取值依据。 */
@@ -1321,7 +1310,6 @@ static void ekf_publish(volatile v5f_hold_t *h)
     h->ekf.mag_gate   = s_mag_gate;
     h->ekf.mag_used   = s_mag_used;
     h->ekf.mag_mode    = s_mag_mode;   /* VER=124 */
-    g_v5f_ekf_mb_deg = s_x[IX_MB] * RAD2DEG;   /* VER=132 */
     h->ekf.mag_bh     = s_mag_bh;
     h->ekf.mag_r_deg  = s_mag_r;
     h->ekf.p_yy       = s_Pn[8][8];
@@ -1464,7 +1452,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
                 s_x[IX_BG + i] = h->imu.bias_ok ? (h->imu.gyro_bias_dps[i] * DEG2RAD) : 0.0f;
             }
             s_x[IX_BB] = 0.0f;
-            s_x[IX_MB] = 0.0f;   /* VER=132 复位地磁偏置 */
 
             for (i = 0u; i < EKF_N; i++) {
                 for (j = 0u; j < EKF_N; j++) s_P[i][j] = 0.0f;
@@ -1479,8 +1466,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
                 s_P[12][12] = s_P[13][13] = s_P[14][14] = sbs * sbs;
             }
             s_P[15][15] = V5F_EKF_P0_BARO_M * V5F_EKF_P0_BARO_M;
-            s_P[EI_MB][EI_MB] = (V5F_EKF_BM_P0_DEG * DEG2RAD)
-                              * (V5F_EKF_BM_P0_DEG * DEG2RAD);   /* VER=132 */
             /* s_Pn 还是 bss 的 0；同步成 P0，免得首帧上报假的 0 */
             for (i = 0u; i < EKF_N; i++) {
                 for (j = 0u; j < EKF_N; j++) s_Pn[i][j] = s_P[i][j];

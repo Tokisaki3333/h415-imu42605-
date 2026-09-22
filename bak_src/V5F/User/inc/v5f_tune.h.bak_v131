@@ -135,7 +135,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        132u
+#define V5F_FW_VER        130u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -825,15 +825,6 @@
  * 0.04 deg -> sqrt(P_min)≈0.2 deg（诚实不确定度）。 */
 #define V5F_MAG_STATIC_TAU_S     1.5f
 #define V5F_MAG_STATIC_TAU_EN    1u
-/* VER=132 偏航通道增广「地磁偏置状态」b_m（落实 docs/ekf_yaw_timescale.md 的 M3 结构，
- * 取代"调 τ"）：观测 y = psi + b_m + n_m，H 同时挂 psi 与 b_m；新息按方差比分配。
- * 白噪只用实测值（静止创新 sigma≈0.33 deg），偏置由 GM 过程 Q = 2 sigma_bm^2/T_c 承载。 */
-#define V5F_EKF_MAG_WHITE_DEG   0.35f
-#define V5F_EKF_BM_P0_DEG       2.0f
-#define V5F_EKF_BM_TC_S         60.0f
-#define V5F_EKF_BM_LIM_DEG      20.0f
-/* Q_bm = 2*(2deg)^2/60 s = 4.062e-5 rad^2/s（单位 rad^2/s，写死避免头文件依赖） */
-#define V5F_EKF_BM_Q_RADS2      4.062e-5f
 #define V5F_MAG_CLIP_LSB       32700
 /* VER=129：**删除** VER=125 的常数牵引速度上限，回到"降低前"的自然 EKF 增益
  * K = P88/(P88+R)（用户口径：牵引应是旧版本的快速牵引）。VER=125 曾用

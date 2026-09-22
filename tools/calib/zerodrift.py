@@ -10,7 +10,7 @@ if os.path.exists(CACHE):
     q = np.load(CACHE)
     t0, t1 = np.load('_static_t.npy')
 else:
-    rx = re.compile(r'\[RX\]\s*((?:[0-9A-Fa-f]{2}\s*){24})')
+    rx = re.compile(r'\[RX\]\s*((?:[0-9A-Fa-f]{2}\s*){28})')
     ts = re.compile(r'\[(\d\d):(\d\d):(\d\d)\.(\d\d\d)\]')
     buf = []; t0 = t1 = None
     with open(FN, 'r', errors='ignore') as f:
@@ -19,7 +19,7 @@ else:
             if not m:
                 continue
             b = bytes.fromhex(m.group(1).replace(' ', ''))
-            if b[20:24] != b'\x00\x00\x80\x7f':
+            if b[24:28] != b'\x00\x00\x80\x7f':     # VER=132: 6 float + 4 B 尾 = 28 B
                 continue
             buf.append(b[:16])
             g = ts.search(line)

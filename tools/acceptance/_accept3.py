@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""常规工况验收: CDC 四元数流(每行一帧 24B = q[4] + 地磁入口 + 帧尾 00 00 80 7F)
+"""常规工况验收: CDC 四元数流(每行一帧 **28B** = q[4] + 地磁入口 + b_m + 帧尾 00 00 80 7F)
    ① 格式/完整/模长/速率 ② 有效姿态更新率与每次步长 ③ 角速率剖面(判工况)
-   ④ 静止段(窗速率<2dps, >=1s): 偏航/倾角变化与漂移率 ⑤ 起止姿态差"""
+   ④ 静止段(窗速率<2dps, >=1s): 偏航/倾角变化与漂移率 ⑤ 起止姿态差
+   VER=132: 第 6 路 float = 地磁偏航偏置 b_m(deg)"""
 import numpy as np, re, sys, math
 np.seterr(all='ignore'); sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 P = sys.argv[1] if len(sys.argv) > 1 else r'serial_runtime_20260916_061843_305_export.txt'
-pat = re.compile(r'^\[(\d\d):(\d\d):(\d\d\.\d\d\d)\] \[RX\] ((?:[0-9A-Fa-f]{2} ){23}[0-9A-Fa-f]{2})\s*$')
-ts, qs, mds, nline, bad = [], [], [], 0, 0
+pat = re.compile(r'^\[(\d\d):(\d\d):(\d\d\.\d\d\d)\] \[RX\] ((?:[0-9A-Fa-f]{2} ){27}[0-9A-Fa-f]{2})\s*$')
+ts, qs, mds, bs, nline, bad = [], [], [], [], 0, 0
 for L in open(P, 'rb').read().decode('ascii', 'replace').split('\n'):
     if not L.startswith('['): continue
     nline += 1
@@ -16,12 +17,16 @@ for L in open(P, 'rb').read().decode('ascii', 'replace').split('\n'):
     ts.append(int(m.group(1))*3600+int(m.group(2))*60+float(m.group(3)))
     qs.append(np.frombuffer(b[:16], dtype='<f4'))
     mds.append(float(np.frombuffer(b[16:20], dtype='<f4')[0]))   # VER=124 地磁入口
-    if b[20:24] != b'\x00\x00\x80\x7f': bad += 1
+    bs.append(float(np.frombuffer(b[20:24], dtype='<f4')[0]))    # VER=132 地磁偏置 b_m(deg)
+    if b[24:28] != b'\x00\x00\x80\x7f': bad += 1
 ts = np.array(ts); Q = np.array(qs, dtype=np.float64); N = len(Q)
 nn = np.linalg.norm(Q, axis=1)
 print('%s' % P.split('\\')[-1])
 print('① 行 %d  坏帧 %d  时长 %.2f s  帧 %d  平均 %.0f Hz  |q|偏差 p99 %.2e  非有限 %d' %
       (nline, bad, ts[-1]-ts[0], N, N/(ts[-1]-ts[0]), np.percentile(np.abs(nn-1), 99), int((~np.isfinite(Q)).any(1).sum())))
+if bs:
+    print('⑥ 地磁偏航偏置 b_m: 首 %+.3f  末 %+.3f  中位 %+.3f deg（VER=132 新增状态）'
+          % (bs[0], bs[-1], float(np.median(bs))))
 def ab(a, b): return np.degrees(2*np.arccos(np.clip(np.abs(a*b).sum(1), 0, 1)))
 def yawof(q):
     w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]

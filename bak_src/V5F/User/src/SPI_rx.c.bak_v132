@@ -409,15 +409,13 @@ static void justfloat_report(void)
     uint8_t clip_any = 0u, clip_ax = 0u;   /* VER=97 本帧削顶：任意轴 / 轴位 */
     uint8_t c = 0u;     /* 通道自增计数器：顺序即列号，增删通道不必手改索引（列号见上方说明） */
 
-extern volatile float g_v5f_ekf_mb_deg;   /* VER=132 */
-
 #if (V5F_CDC_QUAT_ONLY != 0u)
     /* ---- VER=100: CDC(EP2 bulk IN) 上报改为 EKF 四元数, JustFloat 标准格式 ----
      * 载荷 = 5 x float32(小端): q[4] + 地磁入口 + 帧尾 00 00 80 7F  => 24 字节/帧, 每个 IMU 帧一帧(8 kHz)。
      * 只报 EKF 姿态; 不报 att.q、不报其它通道。帧内无版本指纹(JustFloat 无标签位)。
      * 切回旧 162 通道日志: v5f_tune.h 里 V5F_CDC_QUAT_ONLY 改 0u。 */
     {
-        static uint8_t qbuf[28];        /* VER=132: 6 float + 4 B 尾 */        /* VER=124: 5 float(四元数+地磁入口) + 4 B 帧尾; static 避免占中断栈 */
+        static uint8_t qbuf[24];        /* VER=124: 5 float(四元数+地磁入口) + 4 B 帧尾; static 避免占中断栈 */
         float qv[4], mm;
         qv[0] = g_v5f_hold.ekf.q[0];
         qv[1] = g_v5f_hold.ekf.q[1];
@@ -428,12 +426,8 @@ extern volatile float g_v5f_ekf_mb_deg;   /* VER=132 */
          * 放在帧尾**之前** —— JustFloat 要求 00 00 80 7F 是最后 4 字节。 */
         mm = g_v5f_hold.ekf.mag_mode;
         memcpy(qbuf + 16u, &mm, 4u);
-        {   /* VER=132 第 6 路：地磁偏航偏置 b_m（deg） */
-            float bm = g_v5f_ekf_mb_deg;
-            memcpy(qbuf + 20u, &bm, 4u);
-        }
-        qbuf[24] = 0x00u; qbuf[25] = 0x00u; qbuf[26] = 0x80u; qbuf[27] = 0x7Fu;
-        (void)hid_up_enqueue(qbuf, 28u);
+        qbuf[20] = 0x00u; qbuf[21] = 0x00u; qbuf[22] = 0x80u; qbuf[23] = 0x7Fu;
+        (void)hid_up_enqueue(qbuf, 24u);
     }
     return;
 #endif

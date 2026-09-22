@@ -21,7 +21,7 @@ print("parsing %s ..." % FN)
 raw = re.compile(r'\[RX\]\s*((?:[0-9A-Fa-f]{2}\s*){20})').findall(
     open(FN, 'r', errors='ignore').read())
 buf = np.frombuffer(b''.join(bytes.fromhex(s.replace(' ', '')) for s in raw), dtype='<f4')
-q = buf.reshape(-1, 6)[:, :4].astype(np.float64)      # 20 B/帧 = 4 分量 + 4 B 帧尾
+q = buf.reshape(-1, 7)[:, :4].astype(np.float64)      # VER=132: 28 B/帧 = 6 float + 4 B 帧尾
 q /= np.linalg.norm(q, axis=1, keepdims=True)
 N = len(q)
 print("  N = %d frames, q0 = %s" % (N, np.array2string(q[0], precision=7)))
