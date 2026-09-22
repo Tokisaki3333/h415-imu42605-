@@ -758,7 +758,7 @@ static void justfloat_report(void)
         ch[c++] = g_v5f_hold.ekf.mag_cmp_amn;   /* ★VER=78 罗盘：比力模长(g) */
         ch[c++] = g_v5f_hold.ekf.mag_cmp_mhn;   /* ★VER=78 罗盘：法平面内磁场模长 */
         ch[c++] = g_v5f_hold.ekf.mag_age_ms;
-        ch[c++] = g_v5f_hold.ekf.mag_rs;           /* VER=123 上报：重力矢量误差估计(deg)，<2 用投影入口 */
+        ch[c++] = g_v5f_hold.ekf.mag_rs;           /* ★VER=84 磁 R 放大倍数 */
         ch[c++] = g_v5f_hold.ekf.tilt_inv_ms;      /* ★VER=84 倾角参考失效时长(ms) */
         ch[c++] = (float)g_v5f_hold.ekf.mag_hold;  /* ★VER=84 磁被暂停 */
         ch[c++] = (float)g_v5f_hold.ekf.grav_ok;   /* ★VER=84 重力观测门 */

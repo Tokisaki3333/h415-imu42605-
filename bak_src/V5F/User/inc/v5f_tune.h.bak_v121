@@ -135,7 +135,7 @@
 /* K 组：构建指纹 fw_tag（报表最后一列）
  *   编码 = (VER<<16) | (通道数<<8) | 开关位：bit0 EKF  bit1 MAG_CAL  bit2 判静旁路
  *   改固件必须 +1；刷完先核对它，对不上 = 刷写没生效。校验工具 check_fw.py。 */
-#define V5F_FW_VER        123u
+#define V5F_FW_VER        121u
 
 /* ---- VER=97 陀螺削顶检测 ----------------------------------------------------
  * ICM-42605 陀螺满量程就是 +-2000 dps（16.4 LSB/(度/s)，+-32768 LSB 对应 +-2000）。
@@ -581,8 +581,7 @@
  *   0.01 m/s^2/sqrt(s)：10 s 长到 0.032、100 s 长到 0.1 —— 正好覆盖泄漏量级。 */
 #define V5F_EKF_SIG_BA_RW        0.01f
 #define V5F_EKF_SIG_BG_RW        (1.0e-5f * 0.017453292f)  /* VER=118 极小随机游走: 保相对(高通)精度 */
-#define V5F_EKF_GYRO_KS          2.0e-3f  /* VER=122: 恢复 v119 口径（固定标度修掉常数项后剩速率相关 ~2000ppm）；
-                                                  * 用户口径是满量程 1000 ppm，偏航行已单列 V5F_EKF_GYRO_KS_YAW */
+#define V5F_EKF_GYRO_KS          1.0e-3f  /* VER=121: 用户口径 —— 满量程 1000 ppm（原 2e-3） */
 #define V5F_EKF_P0_BG_SEED_RADS  (0.005f * 0.017453292f)  /* VER=118 追踪器播种时的零偏 1sigma */
 #define V5F_EKF_SIG_BARO_RW      0.0f    /* 气压基准随机游走：同上 */
 /* 加速度整流（离心项 a_c = w^2*r）在陀螺上的误差上界 [dps/g]。
@@ -608,7 +607,7 @@
  * 残差涨到 106 度而单步只剩 0.03~0.12 度。
  * 2x2 精确式算得 drain/P = 5.9e-4 /样本；本值让 P[8][8] 稳在 0.0122
  * = (7.2 度)^2，即偏航不确定度永不小于磁力计自身精度量级。 */
-#define V5F_EKF_Q_YAW_MIN        1.0e-12f /* VER=122: 降为纯数值下限；随机游走改由 V5F_EKF_Q_YAW_ARW 承载 */
+#define V5F_EKF_Q_YAW_MIN        1.0e-12f /* VER=121: 降为纯数值下限；随机游走改由 V5F_EKF_Q_ATT_ARW 承载 */
 #define V5F_EKF_P_FLOOR          1.0e-12f
 
 /* ---- P0（对齐那一帧）---- */
@@ -630,7 +629,7 @@
  * 判据：K 是否仍在上限。h=0.4334, R=(0.5 度)^2=7.6154e-05 时
  *   P=1e-12 -> K=0.000（死）; P=7.615e-05 -> K=0.365（满）; 阈值 P>1.8e-05。
  * 取 (0.5 度)^2 = 磁力计自身的测量噪声：滤波器对偏航的不确定度不可能比测量更小。 */
-#define V5F_EKF_YAW_P_MIN        ((0.01f * 0.017453292f) * (0.01f * 0.017453292f))  /* VER=122: 原为地磁 sigma^2=(2deg)^2，使 K>=0.5（地磁恒定满权重）；改为纯数值地板 */
+#define V5F_EKF_YAW_P_MIN        ((0.05f * 0.017453292f) * (0.05f * 0.017453292f))  /* VER=120: 原为磁 sigma^2(=2deg^2) 使 K>=0.5; 改为 0.05deg^2 小地板, 交叉点由 P/R 决定 */
 /* VER=105：原为 (V5F_EKF_MAG_SIG_RAD)^2（0.5 度旧量测噪声）。旧标量模式已删，
  * 改用真牵引的 sigma（V5F_EKF_MAG_VEC_SIG_DEG = 0.9 度，实测 p50 0.5 / p90 1.3）。 */
 #define V5F_EKF_TILT_SIG_RAD     (0.5f * 0.017453292f)               /* 单位矢量切向 0.5 度 */
@@ -795,47 +794,25 @@
  *  即比偏航弱 ~16 倍)，避免重力通道失效时由磁独自决定倾斜 -> 大残差。
  *  护栏：tilt 的 sigma 恒 >= 偏航的 sigma，且上限 TILT_SIG_MAX。 */
 #define V5F_EKF_MAG_VEC_SIG_TILT_DEG   3.0f
-/* VER=123 地磁→EKF 两个入口（互斥）用的"重力矢量误差估计"累加器。
- * 每 EKF 观测帧（348.8 Hz = 23 DRDY 帧/周期 = 8021.9/23）更新一次；u32 定点，
- * 单位 1e-6 deg（微度）-> u32 满量程 4294.97 deg。
- *  该窗口内多数 DRDY 帧有重力牵引 -> 重力正在修倾角 -> 比例衰减（位移实现）：
- *    SHIFT=7 => x(1-1/128)/帧 => tau = 128 帧 = 0.367 s
- *    （与重力通道自己的倾角收敛 tau = dt/(K*h) ≈ 0.36 s 一致）
- *  否则 -> 累加陀螺自己的误差率（两个实测系数）：1000 ppm*|w| + 2 deg/h。
- *    分辨率够：纯零漂 = (2/3600)*2.867ms = 1.59 u deg/帧（定点不截断到 0）；
- *              100 dps 时 = 288 u deg/帧。
- *  阈值 THR = 2 deg = 地磁自身误差量级 => 超过它说明"重力矢量误差已经不低"，
- *    才允许地磁用矢量方式；低于它只用地磁修姿态角（投影到重力法平面）。
- *  防溢出：饱和加（MAX-a 比较后才加），到顶停在 0xFFFFFFFF 不回绕；
- *          衰减用位移，无乘法、无中间量。
- * 到达 2 deg 的用时 t = 2/(1000ppm*|w| + 2deg/h)：
- *   静止 1.0 h / 20 dps 97 s / 100 dps 19.9 s / 300 dps 6.6 s / 1000 dps 2.0 s。 */
-#define V5F_EKF_GYRO_DRIFT_DPS         (2.0f / 3600.0f)  /* 零漂 2 deg/h（实测口径） */
-#define V5F_EKF_MAG_FF_MAX             0xFFFFFFFFu       /* u32 顶 = 4294.97 deg（微度） */
-#define V5F_EKF_MAG_FF_SHIFT           7u                /* 衰减 x(1-2^-7)，tau=128 帧=0.367 s */
-#define V5F_EKF_MAG_FF_THR_DEG         2.0f              /* 切矢量方式的阈值 = 2 deg */
-#define V5F_EKF_MAG_PLANE_TILT_CAP_DEG 5.0f              /* 入口A 的 R 里倾角项钳位 */
-/* VER=122 偏航行的"角随机游走"基底（rad/rt-s）。
- * S3 实测陀螺随机游走 N_eff = 0.58 deg/rt-h（docs/accel_position_design.md 7）
- *   = 0.009667 deg/rt-s -> (0.009667*DEG2RAD)^2 = 2.851e-08 rad^2/s。
- * **不要**再用 V5F_EKF_SIG_G_DPS(0.1224 dps)：那是 8 kHz 单样本 RMS，当谱密度用
- *   等效 7.34 deg/rt-h（大 12.6 倍，Q 大 336 倍）-> P[8][8] 被顶大 -> 地磁修正被强制加快。 */
-#define V5F_EKF_Q_YAW_ARW       (0.58f / 60.0f * 0.017453292f)
-/* VER=122 偏航行的"转动标度"系数（无量纲）：用户口径 = 满量程 1000 ppm。
- * ICM-42605 量程 +-2000 dps（16.4 LSB/dps，v5f_tune.h 141 行）。
- * 只作用于偏航行；倾角行仍用 V5F_EKF_GYRO_KS(2e-3，v119 口径)。 */
-#define V5F_EKF_GYRO_KS_YAW     1.0e-3f
-/* VER=122 地磁修正速度的**等效上限**（偏航行 Q 的上限，rad^2/s）。
- * "地磁修正速度以 EKF 标准数学实现"：不钳 K，而是把 Q 限制住，让标准增益
- *   K = P h/(h^2 P + R)、tau = dt*sqrt(R/(Q*dt))/h 自然给出速度上限。
- * 推导：要求 tau >= tau_min = 1 s（用户"先前讨论值"= 1000 ppm x FS(2000 dps) = 2 dps，
- *   即"误差 <= 地磁自身误差 2 deg 时修正速度 <= 2 dps"）：
- *     Q_MAX = R_yaw / ((h/dt_e)^2 * dt_e)
- *           = (2*DEG2RAD)^2 / ((0.5831/0.001995)^2 * 0.001995)
- *           = 1.2185e-03 / 170.45 = 7.14e-06 rad^2/s
- *   （h = cos(dip) = 0.5831 = e1 方向对偏航的灵敏度，dt_e = 1/501.4 s）
- * 满量程漂移(2 dps)下的稳态滞后 = 漂移率*tau = 2 dps * 1 s = 2 deg = 地磁自身误差（自洽）。 */
-#define V5F_EKF_Q_YAW_MAX       7.14e-6f
+/* VER=121 姿态三行(roll/pitch/yaw)的"角随机游走"基底（rad/rt-s）。
+ * 依据：S3 实测陀螺随机游走 N_eff = 0.58 deg/rt-h
+ *   （docs/accel_position_design.md 7）= 0.009667 deg/rt-s
+ *   -> (0.009667*DEG2RAD)^2 = 2.851e-08 rad^2/s。
+ * 注意 **不要** 再用 V5F_EKF_SIG_G_DPS(0.1224 dps)：那是 8 kHz 的**单样本 RMS**，
+ *   当谱密度用会等效成 7.34 deg/rt-h（比实测大 12.6 倍，Q 大 336 倍）
+ *   -> 姿态被外部观测（重力/地磁）过度牵引。 */
+#define V5F_EKF_Q_ATT_ARW       (0.58f / 60.0f * 0.017453292f)
+/* VER=121 地磁偏航"闸门"（用户：小转动时地磁的固定误差不许进姿态）。
+ * 只有 **EKF 自己的偏航不确定度 P[8][8]**（= 陀螺自己的累积，重力帮不上它）
+ * 涨到超过地磁自身误差，才允许地磁参与本次更新：
+ *   P <= P_LO -> w = 0（本次地磁更新整块不执行：K=0、P 不动、不计 chi2）
+ *   P >= P_HI -> w = 1（满权重 KF 牵引）；中间线性。
+ * 2 deg = S3 实测地磁偏航残差 p50 1.7~2.15 deg；
+ * 4 deg = 其系统项量级（会话间硬磁中心差 2.33 uT => 4.4 deg）。
+ * 到达闸门：静止 ~35 min / 20 dps ~6 min / 50 dps ~15 s / 300 dps 44 s
+ *   / 2000 dps 1.0 s => 常规 10 min 飞行内**地磁全程不参与**。 */
+#define V5F_EKF_MAG_GATE_LO_DEG   2.0f
+#define V5F_EKF_MAG_GATE_HI_DEG   4.0f
 #define V5F_EKF_MAG_VEC_TILT_SIG_MAX_DEG  30.0f
 #define V5F_EKF_MAG_VEC_K_MAX     0.10f
 /* VER=107 倾斜权置信度：实测倾角与模型差 ddip，c = 1/(1+(ddip/REF)^2)；

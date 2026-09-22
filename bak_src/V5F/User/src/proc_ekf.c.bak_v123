@@ -138,10 +138,6 @@ static float    s_tilt_inv_ms;        /* ★VER=84 上报：倾角参考失效时长(ms) */
 static uint8_t  s_grav_ok;            /* ★VER=84 上报：重力观测门状态 */
 static float    s_mag_rs;             /* ★VER=84 上报：磁 R 放大倍数 */
 static uint8_t  s_mag_hold;           /* ★VER=84 上报：磁因倾角失效被暂停 */         /* ★VER=83 上报：磁数据到使用时刻的年龄 (ms) */
-/* VER=123 地磁两入口的切换判据：重力矢量（倾角）误差估计，u32 定点，单位 1e-6 deg */
-static uint32_t s_grav_err;
-static float    s_ff_t;                /* 上次累加器更新时刻（s_t_run） */
-static uint32_t s_ff_n, s_ff_ok;       /* 两观测帧之间的 DRDY 帧数 / 其中有重力牵引的帧数 */
 static uint32_t s_mag_cnt_upd;        /* ★VER=73 上一次真正施加磁观测时的 ist 样本号 */
 
 static uint64_t s_last_tick;
@@ -639,45 +635,6 @@ static void ekf_m3_baro(const volatile v5f_proc_gate_t *gate)
 }
 
 /* M7 磁偏航（1 维，只挂第 8 项） */
-/* ===========================================================================
- * VER=123 地磁→EKF 的**两个入口**（互斥：每个观测帧只调其中一个）
- *   入口 A：重力法向量平面投影 -> 只修正姿态角（偏航）
- *   入口 B：矢量方式（e1 偏航 + e2 倾斜）
- * 判据 s_grav_err（重力矢量误差估计，单位 1e-6 deg）见 ekf_m7_mag 末尾。
- * ========================================================================= */
-
-/* ---- 入口 A：把地磁矢量投影到以重力为法向量的平面，只用平面内的航向角残差 ------
- * 原文取自 VER=103 之前的实现（bak_src/V5F/User/src/proc_ekf.c.bak_v103_magvec），
- * 那一版里这是**地磁唯一的融合方式**、经过实机验证 => 残差/H/掩码直接复用：
- *   r = wrap_pi(thm - thp)   测量 - 预测（xm 参考轴下的平面内角）
- *   H 只有偏航行（s_H[0][8] = 1）
- *   注入掩码 0x0100：只开偏航状态，roll/pitch 的 K 被清零 = 只修正姿态角
- *   R = sigma_h^2 + (tanI*sigma_tilt)^2：倾角不确定度会污染平面内航向；
- *     重力有效时 sigma_tilt 极小，R 自动退化到 sigma_h^2。 */
-static uint8_t ekf_mag_entry_plane(float thm, float thp)
-{
-    float R1[1], r1[1], sig_h, sig_t, dl;
-
-    r1[0] = wrap_pi(thm - thp);
-    sig_h = V5F_EKF_MAG_VEC_SIG_DEG;
-    sig_t = sqrtf(s_P[6][6] + s_P[7][7]) * RAD2DEG;
-    if (sig_t > V5F_EKF_MAG_PLANE_TILT_CAP_DEG) sig_t = V5F_EKF_MAG_PLANE_TILT_CAP_DEG;
-    dl = V5F_EKF_DIP_TAN * (sig_t * DEG2RAD);
-    R1[0] = (sig_h * DEG2RAD) * (sig_h * DEG2RAD) + dl * dl;
-
-    H_zero(1u);
-    s_H[0][8] = 1.0f;
-    return ekf_update(R1, 1u, r1, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
-                      0x0100u, V5F_EKF_MAG_VEC_K_MAX);
-}
-
-/* ---- 入口 B：矢量方式（VER=103 起的现实现，一字未改）：e1 偏航 + e2 倾斜 ---------- */
-static uint8_t ekf_mag_entry_vec(const float *r2v, const float *RRv)
-{
-    return ekf_update(RRv, 2u, r2v, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
-                      0x01C0u, V5F_EKF_MAG_VEC_K_MAX);
-}
-
 static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gate)
 {
     float rg[2], Rt[3][3], Bn[3], mf[3], ab[3], mh[3], xv[3], crs3[3];
@@ -951,7 +908,7 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
         {   /* VER=118: 倾斜行同样用固定常数 R，不再按 conf 抬 R */
             float st = V5F_EKF_MAG_VEC_SIG_TILT_DEG;
             RRv[3] = (st * DEG2RAD) * (st * DEG2RAD);
-            s_mag_rs = (float)s_grav_err * 1.0e-6f;   /* VER=123 上报：重力矢量误差估计 deg（0=重力有效）*/
+            s_mag_rs = 1.0f;
             (void)conf;
         }
     }
@@ -974,16 +931,8 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     }
 
     /* ---------------- 模式 1：真牵引（2 维向量量测） ---------------- */
-    /* ---- VER=123 两个入口互斥：由"重力矢量误差估计"决定用哪一个 ------------------
-     * s_grav_err <= THR(2 deg)：重力矢量误差很低 -> 入口 A（投影到重力法平面，
-     *                            只修正姿态角，roll/pitch 完全不参与）
-     * s_grav_err >  THR       ：重力长期没牵引、倾角只能靠陀螺 -> 入口 B（矢量方式）
-     * 阈值比较用微度整数；不加回差（判据不含 EKF 的 P 反馈，不存在极限环）。 */
-    if (s_grav_err > (uint32_t)(V5F_EKF_MAG_FF_THR_DEG * 1.0e6f)) {
-        st = ekf_mag_entry_vec(r2v, RRv);      /* 入口 B：矢量方式 */
-    } else {
-        st = ekf_mag_entry_plane(thm, thp);    /* 入口 A：重力法平面投影，只修正姿态角 */
-    }
+    st = ekf_update(RRv, 2u, r2v, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
+                    0x01C0u, V5F_EKF_MAG_VEC_K_MAX);
     if (st == 0u) {
         s_gate_bits |= V5F_EKF_GB_MAG;
         s_mag_used = 1u;
@@ -1435,7 +1384,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             s_w_snap[0] = s_w_snap[1] = s_w_snap[2] = 0.0f;
             s_mag_ts_last = 0ULL;
             s_bh_idx = 0u; s_bh_fill = 0u;
-            s_grav_err = 0u; s_ff_n = 0u; s_ff_ok = 0u; s_ff_t = s_t_run;   /* VER=123 切换判据复位 */
             s_mag_anchor = 0u;   /* ★VER=51 重新对齐后允许再做一次快速偏航对齐 */
             for (i = 0u; i < 5u; i++) { s_nis[i] = 0.0f; s_rej[i] = 0u; }
             s_gate_bits = 0u;
@@ -1495,9 +1443,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
     /* ★VER=84 倾角参考失效累计（每帧），驱动磁暂停门。
      * 门信号取上一帧算好的 gate->ekf_tilt，0.3s 的门不在乎一帧滞后。 */
     s_grav_ok = gate->ekf_tilt;
-    /* VER=123 地磁两入口切换：观测帧之间的 DRDY 帧计数（门控降采样源） */
-    s_ff_n++;
-    if (gate->ekf_tilt) s_ff_ok++;
     if (gate->ekf_tilt) s_tilt_bad_s = 0.0f;
     else if (s_tilt_bad_s < 10.0f) s_tilt_bad_s += dt;
     s_tilt_inv_ms = s_tilt_bad_s * 1e3f;
@@ -1567,30 +1512,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
              * ★ 必须**在观测更新之前**推进：P 已经在上面 16 帧里传播完了
              *   （P_k|k-1 = F P_k-1|k-1 F' + Q），状态若留到更新之后再推进，
              *   状态与协方差就会错开一个周期。 */
-            /* ---- VER=123 重力矢量误差估计（每 EKF 观测帧一次）----------------------
-             * 门控判断用两观测帧之间的 DRDY 帧降采样：多数有重力牵引 -> 算"有牵引"。
-             * 有牵引：重力正在修倾角 -> 比例衰减（位移，无乘法/无溢出）；
-             * 无牵引：累加陀螺自己的误差率（1000 ppm*|w| + 2 deg/h）。
-             * 饱和加：到 u32 顶停在最大值，不回绕。 */
-            {
-                float dtw = s_t_run - s_ff_t;
-                s_ff_t = s_t_run;
-                if (s_ff_n > 0u) {
-                    if (s_ff_ok * 2u >= s_ff_n) {
-                        s_grav_err -= (s_grav_err >> V5F_EKF_MAG_FF_SHIFT);
-                    } else {
-                        float inc = (V5F_EKF_GYRO_KS_YAW * s_wmag * RAD2DEG
-                                     + V5F_EKF_GYRO_DRIFT_DPS) * dtw * 1.0e6f;
-                        uint32_t a = (inc > 0.0f) ? (uint32_t)inc : 0u;
-                        if (s_grav_err <= (V5F_EKF_MAG_FF_MAX - a)) {
-                            s_grav_err += a;
-                        } else {
-                            s_grav_err = V5F_EKF_MAG_FF_MAX;   /* 饱和，不回绕 */
-                        }
-                    }
-                    s_ff_n = 0u; s_ff_ok = 0u;
-                }
-            }
             s_gate_bits = 0u;                  /* 本周期观测记账从这里开始 */
             if (s_sat) { s_gate_bits |= V5F_EKF_GB_SAT; s_sat = 0u; }
             s_chi2_soft = 0u;

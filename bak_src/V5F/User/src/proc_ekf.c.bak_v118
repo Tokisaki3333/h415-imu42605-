@@ -128,7 +128,6 @@ static uint8_t  s_bh_fill;
 static float    s_mag_dth[3];
 /* VER=103 É¾³ý s_mag_tilt_bad_s£ºËüÖ»·þÎñÓÚ¡°ÔË¶¯ÖÐ½û´Å¡±ÄÇÌõ hold£¬ÒÑËæËüÒ»ÆðÉ¾ */
 static uint32_t s_ist_last;
-static float    s_wmag;                /* VER=118 ±¾ÖÜÆÚ |w| (rad/s)£¬¹© Q ±ê¶ÈÎó²îÏî */
 static float    s_w_int[3];           /* ¡ïVER=83 ÓÀ²»¹éÁãµÄÍÓÂÝ½ÇÔöÁ¿»ý·Ö int(w dt) (rad) */
 static float    s_w_snap[3];          /* ¡ïVER=83 ´Å DRDY Ê±¿ÌµÄ»ý·Ö¿ìÕÕ */
 static uint64_t s_mag_ts_last;        /* ¡ïVER=83 ÉÏ´Î¼ûµ½µÄ´Å DRDY Ê±¼ä´Á (10ns µ¥Î») */
@@ -138,10 +137,6 @@ static float    s_tilt_inv_ms;        /* ¡ïVER=84 ÉÏ±¨£ºÇã½Ç²Î¿¼Ê§Ð§Ê±³¤(ms) */
 static uint8_t  s_grav_ok;            /* ¡ïVER=84 ÉÏ±¨£ºÖØÁ¦¹Û²âÃÅ×´Ì¬ */
 static float    s_mag_rs;             /* ¡ïVER=84 ÉÏ±¨£º´Å R ·Å´ó±¶Êý */
 static uint8_t  s_mag_hold;           /* ¡ïVER=84 ÉÏ±¨£º´ÅÒòÇã½ÇÊ§Ð§±»ÔÝÍ£ */         /* ¡ïVER=83 ÉÏ±¨£º´ÅÊý¾Ýµ½Ê¹ÓÃÊ±¿ÌµÄÄêÁä (ms) */
-/* VER=123 µØ´ÅÁ½Èë¿ÚµÄÇÐ»»ÅÐ¾Ý£ºÖØÁ¦Ê¸Á¿£¨Çã½Ç£©Îó²î¹À¼Æ£¬u32 ¶¨µã£¬µ¥Î» 1e-6 deg */
-static uint32_t s_grav_err;
-static float    s_ff_t;                /* ÉÏ´ÎÀÛ¼ÓÆ÷¸üÐÂÊ±¿Ì£¨s_t_run£© */
-static uint32_t s_ff_n, s_ff_ok;       /* Á½¹Û²âÖ¡Ö®¼äµÄ DRDY Ö¡Êý / ÆäÖÐÓÐÖØÁ¦Ç£ÒýµÄÖ¡Êý */
 static uint32_t s_mag_cnt_upd;        /* ¡ïVER=73 ÉÏÒ»´ÎÕæÕýÊ©¼Ó´Å¹Û²âÊ±µÄ ist Ñù±¾ºÅ */
 
 static uint64_t s_last_tick;
@@ -639,45 +634,6 @@ static void ekf_m3_baro(const volatile v5f_proc_gate_t *gate)
 }
 
 /* M7 ´ÅÆ«º½£¨1 Î¬£¬Ö»¹ÒµÚ 8 Ïî£© */
-/* ===========================================================================
- * VER=123 µØ´Å¡úEKF µÄ**Á½¸öÈë¿Ú**£¨»¥³â£ºÃ¿¸ö¹Û²âÖ¡Ö»µ÷ÆäÖÐÒ»¸ö£©
- *   Èë¿Ú A£ºÖØÁ¦·¨ÏòÁ¿Æ½ÃæÍ¶Ó° -> Ö»ÐÞÕý×ËÌ¬½Ç£¨Æ«º½£©
- *   Èë¿Ú B£ºÊ¸Á¿·½Ê½£¨e1 Æ«º½ + e2 ÇãÐ±£©
- * ÅÐ¾Ý s_grav_err£¨ÖØÁ¦Ê¸Á¿Îó²î¹À¼Æ£¬µ¥Î» 1e-6 deg£©¼û ekf_m7_mag Ä©Î²¡£
- * ========================================================================= */
-
-/* ---- Èë¿Ú A£º°ÑµØ´ÅÊ¸Á¿Í¶Ó°µ½ÒÔÖØÁ¦Îª·¨ÏòÁ¿µÄÆ½Ãæ£¬Ö»ÓÃÆ½ÃæÄÚµÄº½Ïò½Ç²Ð²î ------
- * Ô­ÎÄÈ¡×Ô VER=103 Ö®Ç°µÄÊµÏÖ£¨bak_src/V5F/User/src/proc_ekf.c.bak_v103_magvec£©£¬
- * ÄÇÒ»°æÀïÕâÊÇ**µØ´ÅÎ¨Ò»µÄÈÚºÏ·½Ê½**¡¢¾­¹ýÊµ»úÑéÖ¤ => ²Ð²î/H/ÑÚÂëÖ±½Ó¸´ÓÃ£º
- *   r = wrap_pi(thm - thp)   ²âÁ¿ - Ô¤²â£¨xm ²Î¿¼ÖáÏÂµÄÆ½ÃæÄÚ½Ç£©
- *   H Ö»ÓÐÆ«º½ÐÐ£¨s_H[0][8] = 1£©
- *   ×¢ÈëÑÚÂë 0x0100£ºÖ»¿ªÆ«º½×´Ì¬£¬roll/pitch µÄ K ±»ÇåÁã = Ö»ÐÞÕý×ËÌ¬½Ç
- *   R = sigma_h^2 + (tanI*sigma_tilt)^2£ºÇã½Ç²»È·¶¨¶È»áÎÛÈ¾Æ½ÃæÄÚº½Ïò£»
- *     ÖØÁ¦ÓÐÐ§Ê± sigma_tilt ¼«Ð¡£¬R ×Ô¶¯ÍË»¯µ½ sigma_h^2¡£ */
-static uint8_t ekf_mag_entry_plane(float thm, float thp)
-{
-    float R1[1], r1[1], sig_h, sig_t, dl;
-
-    r1[0] = wrap_pi(thm - thp);
-    sig_h = V5F_EKF_MAG_VEC_SIG_DEG;
-    sig_t = sqrtf(s_P[6][6] + s_P[7][7]) * RAD2DEG;
-    if (sig_t > V5F_EKF_MAG_PLANE_TILT_CAP_DEG) sig_t = V5F_EKF_MAG_PLANE_TILT_CAP_DEG;
-    dl = V5F_EKF_DIP_TAN * (sig_t * DEG2RAD);
-    R1[0] = (sig_h * DEG2RAD) * (sig_h * DEG2RAD) + dl * dl;
-
-    H_zero(1u);
-    s_H[0][8] = 1.0f;
-    return ekf_update(R1, 1u, r1, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
-                      0x0100u, V5F_EKF_MAG_VEC_K_MAX);
-}
-
-/* ---- Èë¿Ú B£ºÊ¸Á¿·½Ê½£¨VER=103 ÆðµÄÏÖÊµÏÖ£¬Ò»×ÖÎ´¸Ä£©£ºe1 Æ«º½ + e2 ÇãÐ± ---------- */
-static uint8_t ekf_mag_entry_vec(const float *r2v, const float *RRv)
-{
-    return ekf_update(RRv, 2u, r2v, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
-                      0x01C0u, V5F_EKF_MAG_VEC_K_MAX);
-}
-
 static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gate)
 {
     float rg[2], Rt[3][3], Bn[3], mf[3], ab[3], mh[3], xv[3], crs3[3];
@@ -936,8 +892,8 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
             float dip_m, dip_0;
             if (cm >  1.0f) cm =  1.0f;
             if (cm < -1.0f) cm = -1.0f;
-            /* ç£åœºæœä¸‹æ—?angle(m^,gn) = 90 + Iï¼Œæ‰€ä»?dip_m = angle - 90ï¼? +Iï¼‰ï¼›
-             * å†™æˆ 90 - angle ä¼šå¾— -57 åº¦ï¼Œä½¿ä¿¡åº¦æ°¸è¿œåŽ‹åˆ°ä¸‹é™?*/
+            /* ç£åœºæœä¸‹æ—¶ angle(m^,gn) = 90 + Iï¼Œæ‰€ä»¥ dip_m = angle - 90ï¼ˆ= +Iï¼‰ï¼›
+             * å†™æˆ 90 - angle ä¼šå¾— -57 åº¦ï¼Œä½¿ä¿¡åº¦æ°¸è¿œåŽ‹åˆ°ä¸‹é™ */
             dip_m = acosf(cm) * RAD2DEG - 90.0f;
             dip_0 = atanf(V5F_EKF_DIP_TAN) * RAD2DEG;
             ddip  = fabsf(dip_m - dip_0);
@@ -946,13 +902,14 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
             if (conf < V5F_EKF_MAG_TILT_CONF_MIN) conf = V5F_EKF_MAG_TILT_CONF_MIN;
         }
         sg2 = V5F_EKF_MAG_VEC_SIG_DEG * DEG2RAD;
-        RRv[0] = sg2 * sg2;                       /* º½ÏòÐÐ£º¹Ì¶¨ R£¨S3 Êµ²â´Å²Ð²î p50 1.7~2.15 deg£© */
+        RRv[0] = sg2 * sg2;                       /* º½ÏòÐÐ£º¸ßÖÃÐÅ */
         RRv[1] = 0.0f; RRv[2] = 0.0f;
-        {   /* VER=118: ÇãÐ±ÐÐÍ¬ÑùÓÃ¹Ì¶¨³£Êý R£¬²»ÔÙ°´ conf Ì§ R */
-            float st = V5F_EKF_MAG_VEC_SIG_TILT_DEG;
+        {
+            float st = V5F_EKF_MAG_VEC_SIG_TILT_DEG / conf;
+            if (st < V5F_EKF_MAG_VEC_SIG_DEG) st = V5F_EKF_MAG_VEC_SIG_DEG;
+            if (st > V5F_EKF_MAG_VEC_TILT_SIG_MAX_DEG) st = V5F_EKF_MAG_VEC_TILT_SIG_MAX_DEG;    /* ÇãÐ±ÐÐ£º°´ÖÃÐÅ¶È½µÈ¨ */
             RRv[3] = (st * DEG2RAD) * (st * DEG2RAD);
-            s_mag_rs = (float)s_grav_err * 1.0e-6f;   /* VER=123 ÉÏ±¨£ºÖØÁ¦Ê¸Á¿Îó²î¹À¼Æ deg£¨0=ÖØÁ¦ÓÐÐ§£©*/
-            (void)conf;
+            s_mag_rs = (1.0f / conf) * (1.0f / conf);
         }
     }
 
@@ -974,16 +931,8 @@ static void ekf_m7_mag(const volatile v5f_hold_t *h, const volatile v5f_proc_gat
     }
 
     /* ---------------- Ä£Ê½ 1£ºÕæÇ£Òý£¨2 Î¬ÏòÁ¿Á¿²â£© ---------------- */
-    /* ---- VER=123 Á½¸öÈë¿Ú»¥³â£ºÓÉ"ÖØÁ¦Ê¸Á¿Îó²î¹À¼Æ"¾ö¶¨ÓÃÄÄÒ»¸ö ------------------
-     * s_grav_err <= THR(2 deg)£ºÖØÁ¦Ê¸Á¿Îó²îºÜµÍ -> Èë¿Ú A£¨Í¶Ó°µ½ÖØÁ¦·¨Æ½Ãæ£¬
-     *                            Ö»ÐÞÕý×ËÌ¬½Ç£¬roll/pitch ÍêÈ«²»²ÎÓë£©
-     * s_grav_err >  THR       £ºÖØÁ¦³¤ÆÚÃ»Ç£Òý¡¢Çã½ÇÖ»ÄÜ¿¿ÍÓÂÝ -> Èë¿Ú B£¨Ê¸Á¿·½Ê½£©
-     * ãÐÖµ±È½ÏÓÃÎ¢¶ÈÕûÊý£»²»¼Ó»Ø²î£¨ÅÐ¾Ý²»º¬ EKF µÄ P ·´À¡£¬²»´æÔÚ¼«ÏÞ»·£©¡£ */
-    if (s_grav_err > (uint32_t)(V5F_EKF_MAG_FF_THR_DEG * 1.0e6f)) {
-        st = ekf_mag_entry_vec(r2v, RRv);      /* Èë¿Ú B£ºÊ¸Á¿·½Ê½ */
-    } else {
-        st = ekf_mag_entry_plane(thm, thp);    /* Èë¿Ú A£ºÖØÁ¦·¨Æ½ÃæÍ¶Ó°£¬Ö»ÐÞÕý×ËÌ¬½Ç */
-    }
+    st = ekf_update(RRv, 2u, r2v, V5F_EKF_NIS_MAX_MAG, &s_nis[4], &s_rej[3],
+                    0x01C0u, V5F_EKF_MAG_VEC_K_MAX);
     if (st == 0u) {
         s_gate_bits |= V5F_EKF_GB_MAG;
         s_mag_used = 1u;
@@ -1151,7 +1100,7 @@ static void ekf_step_nominal(void)
 static void ekf_prop_row(void)
 {
     uint32_t j, k, row = s_prop_row;
-    float sa2, sg2, sq_yaw = 0.0f, qd, dtq = s_dt_prev;
+    float sa2, sg2, qd, dtq = s_dt_prev;
 
     for (j = 0u; j < EKF_N; j++) {
         float s = 0.0f;
@@ -1175,23 +1124,8 @@ static void ekf_prop_row(void)
      * ²»²¹³¥Ëü£¨±êÁ¿Ä£ÐÍ²»³ÉÁ¢£©£¬µ«±ØÐë³ÐÈÏËü¡£ */
     {
         float sr = V5F_EKF_RECT_DPS_PER_G * s_alin_g * DEG2RAD;
-        float ss = V5F_EKF_GYRO_KS * s_wmag;   /* VER=118: ±ê¶ÈÎó²îÏî -> ·½²îËæÊ±¼äÓë×Ü×ª½Çµ¥µ÷Ôö³¤ */
-        float sq = V5F_EKF_SIG_G_RADS * V5F_EKF_SIG_G_RADS + sr * sr + ss * ss;
+        float sq = V5F_EKF_SIG_G_RADS * V5F_EKF_SIG_G_RADS + sr * sr;
         sg2 = sq;
-        /* ---- VER=122 Æ«º½ÐÐ(row 8)µÄ Q °´ EKF ±ê×¼¼ÇÕË£¨ÓÃ»§£ºµØ´ÅÐÞÕýËÙ¶ÈÓÃ ekf ±ê×¼ÊýÑ§ÊµÏÖ£©----
-         * Q_yaw = ARW^2 + (KS_YAW*|w|*DEG2RAD)^2£¬²¢ÕûÌå <= V5F_EKF_Q_YAW_MAX¡£
-         *   1) ARW ÓÃ S3 Êµ²âËæ»úÓÎ×ß V5F_EKF_Q_YAW_ARW£»Ô­Ê½°Ñ 8 kHz µ¥Ñù±¾ RMS
-         *      (0.1224 dps) µ±Æ×ÃÜ¶ÈÓÃ£¬µÈÐ§ 7.34 deg/rt-h£¨Q ´ó 336 ±¶£©£»
-         *   2) ×ª¶¯ÏîÓÃ 1000 ppm ¿Ú¾¶ V5F_EKF_GYRO_KS_YAW ²¢²¹ÉÏ DEG2RAD
-         *      £¨sq ÆäËüÏî¶¼ÊÇ rad Á¿¸Ù£»Ô­Ê½Â©µô = ·Å´ó 1/DEG2RAD^2 = 3283 ±¶£©£»
-         *   3) Q_MAX µÈ¼ÛÓÚ"±Õ»· tau >= 1 s"£¬¼´ÐÞÕýËÙ¶È <= 2 dps£¨Îó²î <= 2 deg Ê±£©£»
-         *   4) Çã½ÇÐÐ(row 6/7)±£³Ö VER=118/119 Ô­×´£¬²»¶¯ÒÑÑéÊÕµÄÍ¨µÀ¡£ */
-        {
-            float kry = V5F_EKF_GYRO_KS_YAW * s_wmag * DEG2RAD;
-            float ark = V5F_EKF_Q_YAW_ARW;
-            sq_yaw = ark * ark + kry * kry;
-            if (sq_yaw > V5F_EKF_Q_YAW_MAX) sq_yaw = V5F_EKF_Q_YAW_MAX;
-        }
     }
     for (j = 0u; j < EKF_N; j++) {
         float s = 0.0f;
@@ -1199,7 +1133,7 @@ static void ekf_prop_row(void)
         if (j == row) {
             qd = V5F_EKF_Q_FLOOR;
             if      (row >= 3u  && row <= 5u)  qd += sa2 * dtq;
-            else if (row >= 6u  && row <= 8u)  qd += ((row == 8u) ? sq_yaw : sg2) * dtq;
+            else if (row >= 6u  && row <= 8u)  qd += sg2 * dtq;
             else if (row >= 9u  && row <= 11u) qd += V5F_EKF_SIG_BA_RW * V5F_EKF_SIG_BA_RW * dtq;
             else if (row >= 12u && row <= 14u) qd += V5F_EKF_SIG_BG_RW * V5F_EKF_SIG_BG_RW * dtq;
             else if (row == 15u)               qd += V5F_EKF_SIG_BARO_RW * V5F_EKF_SIG_BARO_RW * dtq;
@@ -1396,9 +1330,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             for (i = 0u; i < 3u; i++) s_x[IX_P  + i] = 0.0f;
             for (i = 0u; i < 3u; i++) s_x[IX_V  + i] = 0.0f;
             for (i = 0u; i < 3u; i++) s_x[IX_BA + i] = 0.0f;
-            for (i = 0u; i < 3u; i++) {   /* VER=118 µ¥Ïò²¥ÖÖ×·×ÙÆ÷ÁãÆ«£¨´Ëºó EKF ¶ÀÕ¼£¬²»Á¬Ðø×¢Èë£© */
-                s_x[IX_BG + i] = h->imu.bias_ok ? (h->imu.gyro_bias_dps[i] * DEG2RAD) : 0.0f;
-            }
+            for (i = 0u; i < 3u; i++) s_x[IX_BG + i] = 0.0f;
             s_x[IX_BB] = 0.0f;
 
             for (i = 0u; i < EKF_N; i++) {
@@ -1409,10 +1341,7 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             s_P[6][6] = s_P[7][7] = V5F_EKF_P0_TILT_RAD * V5F_EKF_P0_TILT_RAD;
             s_P[8][8] = V5F_EKF_P0_YAW_RAD * V5F_EKF_P0_YAW_RAD;
             s_P[9][9] = s_P[10][10] = s_P[11][11] = V5F_EKF_P0_BA_MPS2 * V5F_EKF_P0_BA_MPS2;
-            {   /* VER=118 ²¥ÖÖ P0_bias£º×·×ÙÆ÷ÓÐÐ§ÓÃ 0.005 dps£¬·ñÔòÓÃÄ¬ÈÏ */
-                float sbs = h->imu.bias_ok ? V5F_EKF_P0_BG_SEED_RADS : V5F_EKF_P0_BG_RADS;
-                s_P[12][12] = s_P[13][13] = s_P[14][14] = sbs * sbs;
-            }
+            s_P[12][12] = s_P[13][13] = s_P[14][14] = V5F_EKF_P0_BG_RADS * V5F_EKF_P0_BG_RADS;
             s_P[15][15] = V5F_EKF_P0_BARO_M * V5F_EKF_P0_BARO_M;
             /* s_Pn »¹ÊÇ bss µÄ 0£»Í¬²½³É P0£¬ÃâµÃÊ×Ö¡ÉÏ±¨¼ÙµÄ 0 */
             for (i = 0u; i < EKF_N; i++) {
@@ -1435,7 +1364,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
             s_w_snap[0] = s_w_snap[1] = s_w_snap[2] = 0.0f;
             s_mag_ts_last = 0ULL;
             s_bh_idx = 0u; s_bh_fill = 0u;
-            s_grav_err = 0u; s_ff_n = 0u; s_ff_ok = 0u; s_ff_t = s_t_run;   /* VER=123 ÇÐ»»ÅÐ¾Ý¸´Î» */
             s_mag_anchor = 0u;   /* ¡ïVER=51 ÖØÐÂ¶ÔÆëºóÔÊÐíÔÙ×öÒ»´Î¿ìËÙÆ«º½¶ÔÆë */
             for (i = 0u; i < 5u; i++) { s_nis[i] = 0.0f; s_rej[i] = 0u; }
             s_gate_bits = 0u;
@@ -1495,9 +1423,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
     /* ¡ïVER=84 Çã½Ç²Î¿¼Ê§Ð§ÀÛ¼Æ£¨Ã¿Ö¡£©£¬Çý¶¯´ÅÔÝÍ£ÃÅ¡£
      * ÃÅÐÅºÅÈ¡ÉÏÒ»Ö¡ËãºÃµÄ gate->ekf_tilt£¬0.3s µÄÃÅ²»ÔÚºõÒ»Ö¡ÖÍºó¡£ */
     s_grav_ok = gate->ekf_tilt;
-    /* VER=123 µØ´ÅÁ½Èë¿ÚÇÐ»»£º¹Û²âÖ¡Ö®¼äµÄ DRDY Ö¡¼ÆÊý£¨ÃÅ¿Ø½µ²ÉÑùÔ´£© */
-    s_ff_n++;
-    if (gate->ekf_tilt) s_ff_ok++;
     if (gate->ekf_tilt) s_tilt_bad_s = 0.0f;
     else if (s_tilt_bad_s < 10.0f) s_tilt_bad_s += dt;
     s_tilt_inv_ms = s_tilt_bad_s * 1e3f;
@@ -1509,7 +1434,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
      *   Ôø¹àÈë 59 ¶È¶øÔË¶¯ÆÚÖ»ÓÐ 17 ¶È£©¡£ */
     /* VER=103: Ô­ s_mag_tilt_bad_s ÀÛ¼Æ¿éÒÑÉ¾³ý£¨ËüÖ»·þÎñÓÚ"ÔË¶¯ÖÐ½û´Å"ÄÇÌõ hold£©¡£ */
     for (i = 0u; i < 3u; i++) {
-        if (i == 0u) s_wmag = sqrtf(w[0]*w[0] + w[1]*w[1] + w[2]*w[2]);   /* VER=118 */
         s_dth[i] += (w[i] - s_x[IX_BG + i]) * dt;
         s_dvb[i] += f[i] * dt;
         s_w_int[i] += w[i] * dt;
@@ -1567,30 +1491,6 @@ uint8_t v5f_proc_ekf(volatile v5f_hold_t *h, const volatile v5f_proc_gate_t *gat
              * ¡ï ±ØÐë**ÔÚ¹Û²â¸üÐÂÖ®Ç°**ÍÆ½ø£ºP ÒÑ¾­ÔÚÉÏÃæ 16 Ö¡Àï´«²¥ÍêÁË
              *   £¨P_k|k-1 = F P_k-1|k-1 F' + Q£©£¬×´Ì¬ÈôÁôµ½¸üÐÂÖ®ºóÔÙÍÆ½ø£¬
              *   ×´Ì¬ÓëÐ­·½²î¾Í»á´í¿ªÒ»¸öÖÜÆÚ¡£ */
-            /* ---- VER=123 ÖØÁ¦Ê¸Á¿Îó²î¹À¼Æ£¨Ã¿ EKF ¹Û²âÖ¡Ò»´Î£©----------------------
-             * ÃÅ¿ØÅÐ¶ÏÓÃÁ½¹Û²âÖ¡Ö®¼äµÄ DRDY Ö¡½µ²ÉÑù£º¶àÊýÓÐÖØÁ¦Ç£Òý -> Ëã"ÓÐÇ£Òý"¡£
-             * ÓÐÇ£Òý£ºÖØÁ¦ÕýÔÚÐÞÇã½Ç -> ±ÈÀýË¥¼õ£¨Î»ÒÆ£¬ÎÞ³Ë·¨/ÎÞÒç³ö£©£»
-             * ÎÞÇ£Òý£ºÀÛ¼ÓÍÓÂÝ×Ô¼ºµÄÎó²îÂÊ£¨1000 ppm*|w| + 2 deg/h£©¡£
-             * ±¥ºÍ¼Ó£ºµ½ u32 ¶¥Í£ÔÚ×î´óÖµ£¬²»»ØÈÆ¡£ */
-            {
-                float dtw = s_t_run - s_ff_t;
-                s_ff_t = s_t_run;
-                if (s_ff_n > 0u) {
-                    if (s_ff_ok * 2u >= s_ff_n) {
-                        s_grav_err -= (s_grav_err >> V5F_EKF_MAG_FF_SHIFT);
-                    } else {
-                        float inc = (V5F_EKF_GYRO_KS_YAW * s_wmag * RAD2DEG
-                                     + V5F_EKF_GYRO_DRIFT_DPS) * dtw * 1.0e6f;
-                        uint32_t a = (inc > 0.0f) ? (uint32_t)inc : 0u;
-                        if (s_grav_err <= (V5F_EKF_MAG_FF_MAX - a)) {
-                            s_grav_err += a;
-                        } else {
-                            s_grav_err = V5F_EKF_MAG_FF_MAX;   /* ±¥ºÍ£¬²»»ØÈÆ */
-                        }
-                    }
-                    s_ff_n = 0u; s_ff_ok = 0u;
-                }
-            }
             s_gate_bits = 0u;                  /* ±¾ÖÜÆÚ¹Û²â¼ÇÕË´ÓÕâÀï¿ªÊ¼ */
             if (s_sat) { s_gate_bits |= V5F_EKF_GB_SAT; s_sat = 0u; }
             s_chi2_soft = 0u;

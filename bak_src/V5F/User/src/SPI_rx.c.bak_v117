@@ -15,8 +15,6 @@ static volatile uint8_t rxfifo[512];
 /* 本 ISR 的耗时（us）。注意 justfloat_report() 在 ISR 里跑的位置早于计时结束那行，
  * 所以上报的是**上一帧**的耗时（一帧滞后，对性能监控无影响）。 */
 static volatile uint32_t s_dma1_irq_us = 0;
-/* VER=117 compute-load probe: ISR only accumulates; printed from main loop */
-static volatile uint32_t s_pr_n = 0u, s_pr_sum = 0u, s_pr_max = 0u, s_pr_ovr = 0u;
 
 /* ==================== VER=97 陀螺削顶统计 ====================
  * 判定与统计都在 justfloat_report 里每帧做（此时 imu.gyro_lsb[] 已是本帧原始值），
@@ -758,7 +756,7 @@ static void justfloat_report(void)
         ch[c++] = g_v5f_hold.ekf.mag_cmp_amn;   /* ★VER=78 罗盘：比力模长(g) */
         ch[c++] = g_v5f_hold.ekf.mag_cmp_mhn;   /* ★VER=78 罗盘：法平面内磁场模长 */
         ch[c++] = g_v5f_hold.ekf.mag_age_ms;
-        ch[c++] = g_v5f_hold.ekf.mag_rs;           /* VER=123 上报：重力矢量误差估计(deg)，<2 用投影入口 */
+        ch[c++] = g_v5f_hold.ekf.mag_rs;           /* ★VER=84 磁 R 放大倍数 */
         ch[c++] = g_v5f_hold.ekf.tilt_inv_ms;      /* ★VER=84 倾角参考失效时长(ms) */
         ch[c++] = (float)g_v5f_hold.ekf.mag_hold;  /* ★VER=84 磁被暂停 */
         ch[c++] = (float)g_v5f_hold.ekf.grav_ok;   /* ★VER=84 重力观测门 */
@@ -895,8 +893,6 @@ void DMA1_Channel2_IRQHandler(void)
             /* 记录本次 ISR 用时的历史最劣(最大)值，us */
             uint32_t d = (uint32_t)(GetTime64_Us() - isr_t0);
             s_dma1_irq_us = d;           /* 下一帧上报它 */
-            s_pr_n++; s_pr_sum += d; if (d > s_pr_max) s_pr_max = d;
-            if (d > 125u) s_pr_ovr++;
         }
     }
 }
@@ -917,22 +913,3 @@ void SPI_DMA_Init(void)
 uint16_t v5f_imu_clip_pm(void)    { return s_clip_pm; }
 uint8_t  v5f_imu_clip_axis(void)  { return s_clip_ax; }
 uint32_t v5f_imu_clip_total(void) { return s_clip_total; }
-
-
-/* VER=117: compute-load probe. Call from main loop; returns 1 once per second
- * with the last second stats: frames, average ISR time (us), worst ISR time (us),
- * over-budget frames (ISR longer than the 124.66us nominal period).
- * NOTE: accumulators are read without masking interrupts - a one-frame race is harmless. */
-uint8_t v5f_isr_probe_1s(uint32_t *n, uint32_t *avg_us, uint32_t *max_us, uint32_t *ovr)
-{
-    static uint64_t s_t0 = 0ULL;
-    uint64_t t = GetTime64_Us();
-    if (s_t0 == 0ULL) { s_t0 = t; return 0u; }
-    if (t - s_t0 < 1000000ULL) return 0u;
-    *n      = s_pr_n;
-    *avg_us = (s_pr_n != 0u) ? (s_pr_sum / s_pr_n) : 0u;
-    *max_us = s_pr_max;
-    *ovr    = s_pr_ovr;
-    s_t0 = t; s_pr_n = 0u; s_pr_sum = 0u; s_pr_max = 0u; s_pr_ovr = 0u;
-    return 1u;
-}

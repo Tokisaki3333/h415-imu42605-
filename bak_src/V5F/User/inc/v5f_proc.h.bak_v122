@@ -224,10 +224,10 @@ extern volatile v5f_proc_gate_t g_v5f_proc_gate;   /* 门控实例（SPI_rx.c 定义） 
  *   而椭圆法两条独立来源只差 0.004%。两者差 0.07%，且拟合里加速度计 z 与陀螺 z 互相耦合。
  *   倾向信椭圆法（0.004% 的交叉一致性是硬证据），故加速度计常量一个字没动。
  *
-  * 三轴标度相对标称 16.4 (VER=119 以 360deg/50RPM 实测残差固定修正)：x -0.848% / y -0.005% / z +0.263% */
-#define V5F_GYRO_LSB_PER_DPS_X   16.2608f     /* VER=119: 360deg/50RPM 实测残差 -890 ppm 固定修正 */
-#define V5F_GYRO_LSB_PER_DPS_Y   16.3992f     /* VER=119: 360deg/50RPM 实测残差 -4860 ppm 固定修正 */
-#define V5F_GYRO_LSB_PER_DPS_Z   16.4431f     /* VER=119: 360deg/50RPM 实测残差 +1200 ppm 固定修正 */
+ * 三轴标度相对标称 16.4：x -0.760% / y +0.484% / z +0.143% */
+#define V5F_GYRO_LSB_PER_DPS_X   16.2753f     /* 第 3 版（保持）：重力法给 eps_x +0.01%，约等于零 */
+#define V5F_GYRO_LSB_PER_DPS_Y   16.4793f     /* 第 4 版：eps_y +0.26%（重力法 +0.32 / 留出记录 +0.20 取中） */
+#define V5F_GYRO_LSB_PER_DPS_Z   16.4235f     /* 第 3 版（保持）：重力法给 eps_z +0.06%，待需要时再上 */
 
 /* 对称交叉灵敏：dps_out[i] = dps[i] + sum_{j!=i} k_ij * dps[j]（对角恒 1，只存 3 个）
  * 用法见 proc_gyro_bias.c；量级 0.15~0.19%，每帧 6 次乘加。 */

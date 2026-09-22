@@ -44,20 +44,6 @@ int main(void)
     // uint64_t last_print_tim = GetTime64_Us(), tim = 0;
     while (1)
     {
-        /* ---- VER=117: compute-load probe, 1 Hz. Main loop only (ISR budget 124.66us).
-         * load_x100 = avg_us * frames / 100  ==  (avg*frames/1e6)*10000  => percent*100 */
-        {
-            uint32_t n = 0u, avg = 0u, mx = 0u, ovr = 0u;
-            if (v5f_isr_probe_1s(&n, &avg, &mx, &ovr))
-            {
-                uint32_t load_x100 = (uint32_t)(((uint64_t)avg * (uint64_t)n) / 100ULL);
-                printf("[V5F] isr %lu Hz avg %lu us max %lu us load %lu.%02lu%% ovr125 %lu\r\n",
-                       (unsigned long)n, (unsigned long)avg, (unsigned long)mx,
-                       (unsigned long)(load_x100 / 100u), (unsigned long)(load_x100 % 100u),
-                       (unsigned long)ovr);
-                usbhs_hid_poll();
-            }
-        }
         usbhs_hid_poll();               /* 上行环有字节就灌 1 个 EP2 包 */
 
         /* ---- FireWater（VOFA+ 文本协议）：20 Hz 输出四元数供检查 ----

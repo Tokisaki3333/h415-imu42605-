@@ -286,6 +286,3 @@ uint32_t v5f_imu_clip_total(void);   /* 上电以来削顶帧总数 */
 void SPI_DMA_Init(void);
 
 #endif /* __SPI_RX_H */
-
-/* VER=117: compute-load probe (see SPI_rx.c) */
-uint8_t v5f_isr_probe_1s(uint32_t *n, uint32_t *avg_us, uint32_t *max_us, uint32_t *ovr);
